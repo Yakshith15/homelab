@@ -541,6 +541,14 @@ In rough order of priority:
 - [x] **Tailscale on mobile** — done. Phone is on the tailnet.
 - [x] **First real service: Jellyfin** — done. Streaming course videos from E drive to Mac + iPhone (via Swiftfin).
 - [x] **Docker Compose** — done. Both Portainer and Jellyfin now managed via `~/homelab/docker-compose.yml` with profiles (`admin`, `media`, `all`). YAML version-controlled in this repo.
+- [ ] **Bump WSL RAM allocation** — currently 3.7 GB (default ~50% of host). For k3s + multiple services, bump to ~6 GB via `C:\Users\<you>\.wslconfig`:
+  ```ini
+  [wsl2]
+  memory=6GB
+  processors=4
+  swap=2GB
+  ```
+  Then `wsl --shutdown` and reopen Ubuntu. Defer until you actually feel the pinch.
 - [ ] **More services** — pick based on need:
   - Vaultwarden (password manager)
   - Homepage (dashboard)
