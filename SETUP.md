@@ -222,7 +222,72 @@ Set admin user/password on first visit. Click into the **local** environment to 
 
 ---
 
-## 9. Jellyfin (media streaming server)
+## 9. Docker Compose (homelab service orchestration)
+
+All services are now declared in a single `docker-compose.yml` file at `~/homelab/docker-compose.yml` (on the Ubuntu node). Profiles let us bring up subsets of services on demand.
+
+### File location
+- **On Ubuntu (live, what Docker reads):** `/home/yakshith/homelab/docker-compose.yml`
+- **In this repo (version-controlled copy):** `docker-compose.yml` next to this file.
+
+Keep them in sync — when you edit on one side, copy to the other. (Future improvement: clone this GitHub repo on the Ubuntu node directly, so there's only one source.)
+
+### Profiles
+Each service is tagged with one or more profiles. Currently:
+- `portainer` → profiles `admin`, `all`
+- `jellyfin` → profiles `media`, `all`
+
+### Day-to-day commands
+
+From `~/homelab/` on Ubuntu:
+
+```bash
+# Bring up everything
+docker compose --profile all up -d
+
+# Bring up just the media stack
+docker compose --profile media up -d
+
+# Bring up just admin tools
+docker compose --profile admin up -d
+
+# Stop everything (containers persist, just stopped)
+docker compose stop
+
+# Stop + remove containers (volumes/data stay)
+docker compose down
+
+# Stop + remove a single service
+docker compose stop jellyfin
+docker compose rm -f jellyfin
+
+# Tail logs
+docker compose logs -f jellyfin
+
+# Validate yaml without running
+docker compose --profile all config
+
+# Recreate after editing the yaml
+docker compose --profile all up -d --force-recreate
+```
+
+### Adding a new service
+
+1. Add a new block under `services:` in `docker-compose.yml`.
+2. Pick its profile(s) — `media`, `admin`, or a new one like `dev`, `monitoring`, etc.
+3. `docker compose --profile <profile> up -d` to start it.
+4. Commit + push the updated yaml.
+
+### Migration history (one-time, done)
+The original Portainer and Jellyfin containers were created with raw `docker run` commands. We migrated to compose by:
+1. `docker stop portainer jellyfin && docker rm portainer jellyfin` (data preserved in named volume + bind mounts).
+2. Wrote `docker-compose.yml` declaring both services. Used `external: true` on `portainer_data` volume to reuse the existing one.
+3. `docker compose --profile all up -d`.
+4. Verified both services came back with all data and settings intact.
+
+---
+
+## 10. Jellyfin (media streaming server)
 
 A Docker container that serves your video library to phone, Mac, anywhere on the tailnet. Free, open source, no account/tracking.
 
@@ -287,7 +352,7 @@ Or (cleaner) migrate to docker-compose so changes don't require recreating conta
 
 ---
 
-## 10. Windows power settings (always-on server mode)
+## 11. Windows power settings (always-on server mode)
 
 Goal: laptop keeps running when lid is closed and never sleeps (when plugged in), so the homelab is genuinely always-on.
 
@@ -309,7 +374,7 @@ Result: laptop runs full speed with lid closed, plugged in. Closes the "Tailscal
 
 ---
 
-## 11. Auto-start on Windows boot
+## 12. Auto-start on Windows boot
 
 Goal: when Windows boots, WSL spins up automatically → systemd starts → tailscaled + ssh + docker containers all come online — no manual intervention.
 
@@ -339,7 +404,7 @@ wsl --list --running          # is Ubuntu running?
 
 ---
 
-## 12. Common commands cheatsheet
+## 13. Common commands cheatsheet
 
 ### From Mac
 
@@ -392,7 +457,7 @@ wsl --list --verbose                  # all distros + their state
 
 ---
 
-## 13. Things we learned (gotchas)
+## 14. Things we learned (gotchas)
 
 ### Tailscale CLI not in PATH on Mac (App Store install)
 Symlink to `/usr/local/bin/tailscale` — see Tailscale section.
@@ -435,11 +500,25 @@ sudo systemctl restart tailscaled
 ```
 Daemon reconnects cleanly within a few seconds.
 
-**Permanent fix:** done — disabled Windows sleep when plugged in (section 9). With Windows always awake, the issue doesn't trigger.
+**Permanent fix:** done — disabled Windows sleep when plugged in (section 11). With Windows always awake, the issue doesn't trigger.
+
+### Compose profiles affect EVERY subcommand
+If you tag services with `profiles: [...]`, then `docker compose <subcommand>` without `--profile <name>` ignores those services entirely. Affects: `up`, `down`, `stop`, `ps`, `config`, `logs`, etc.
+
+**Symptom:** `docker compose down` returns silently but `docker ps` still shows containers running.
+
+**Fix:** always pass the profile flag (or use `--profile all` to act on everything):
+```bash
+docker compose --profile all down
+docker compose --profile all ps
+docker compose --profile all logs -f
+```
+
+Workaround for ad-hoc operations on a single service: name it explicitly — profile filtering is skipped when you name services. E.g. `docker compose up -d portainer`, `docker compose logs jellyfin`.
 
 ---
 
-## 14. Resume / restart procedure
+## 15. Resume / restart procedure
 
 After both laptops have been off:
 
@@ -454,14 +533,14 @@ If `ssh wsl` hangs:
 
 ---
 
-## 15. Next steps (TODO)
+## 16. Next steps (TODO)
 
 In rough order of priority:
 
 - [x] **Windows power settings** — done. Lid close = "Do nothing" (plugged in), sleep timer = Never (plugged in).
 - [x] **Tailscale on mobile** — done. Phone is on the tailnet.
 - [x] **First real service: Jellyfin** — done. Streaming course videos from E drive to Mac + iPhone (via Swiftfin).
-- [ ] **Docker Compose** — learn the `docker-compose.yml` pattern. Replace ad-hoc `docker run` commands with version-controlled compose files. (Good first compose project: migrate Jellyfin to compose.)
+- [x] **Docker Compose** — done. Both Portainer and Jellyfin now managed via `~/homelab/docker-compose.yml` with profiles (`admin`, `media`, `all`). YAML version-controlled in this repo.
 - [ ] **More services** — pick based on need:
   - Vaultwarden (password manager)
   - Homepage (dashboard)
@@ -474,7 +553,7 @@ In rough order of priority:
 
 ---
 
-## 16. Useful references
+## 17. Useful references
 
 - Tailscale admin: https://login.tailscale.com/admin/machines
 - Tailscale docs: https://tailscale.com/kb
