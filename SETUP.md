@@ -561,117 +561,185 @@ In rough order of priority:
 
 ---
 
-## 17. Future: Bare-metal Linux migration plan
+## 17. Future: Dual-boot Windows + Linux migration plan
 
-When the Windows + WSL2 setup hits its limits (RAM ceiling, k3s + many services, wanting full Linux control), the long-term plan is to wipe Windows and install Ubuntu Server directly on the laptop. Everything we built transfers over — same compose files, same Tailscale IPs (mostly), same workflow.
+When WSL2 hits its limits (5 GB RAM ceiling, k3s + many services, Windows update flakiness), the plan is to **dual-boot** the laptop with Windows and Ubuntu side by side. Boot into Linux for the homelab, boot into Windows when needed for Windows-only stuff. GRUB handles the boot menu.
 
-### Why migrate eventually
-- Full 8 GB RAM available to the OS (no Windows overhead, no WSL cap)
-- No `wsl --shutdown` quirks, no Windows updates rebooting your server
-- `/mnt/e/...` paths become real Linux paths (faster, no NTFS translation)
-- Closer to "real" production environments — better for learning
+### Critical tradeoff: only one OS runs at a time
+Dual boot is **not** "two OSes at once" — that would be virtualization. It's "two OSes installed, choose one at boot time." Implications:
 
-### Pre-wipe checklist (CRITICAL — do all before formatting)
+- **Booted into Linux** → homelab is up, Windows is off.
+- **Booted into Windows** → homelab is **down** (no containers running, Tailscale node offline).
+- **Switching = reboot.** No live switching.
 
-1. **Back up media** — `E:\courses\masterclass` (and any other course/video folders). After the wipe, the NTFS partition is gone forever.
-   - Option A: external USB drive (fastest for ~50+ GB of video)
-   - Option B: copy to Mac over Tailscale: `scp -r yakshith@100.76.108.54:/mnt/e/courses/masterclass ~/Desktop/masterclass-backup`
-   - Option C: cloud (Google Drive / OneDrive) — slow on hostel Wi-Fi, last resort
-2. **Back up Jellyfin config** — `~/jellyfin/config` inside WSL has all your library settings, watch history, users:
+So: only worth dual-booting if you genuinely need Windows occasionally. If you don't, full wipe is cleaner. The decision rule:
+- "I'll boot Windows < 5% of the time, only for one specific app" → dual-boot is fine
+- "I might need Windows for X someday" → still go full wipe; reinstall Windows in a VM later if you actually need it
+- "I'm not sure" → stay on WSL2 longer
+
+### Why dual-boot vs full wipe
+| | Dual-boot | Full wipe |
+|---|---|---|
+| Linux RAM | All 8 GB | All 8 GB |
+| Windows still available | Yes | No (would need reinstall) |
+| Disk space for Linux | Whatever you allocate (~half) | Entire disk |
+| Always-on homelab | Only when booted into Linux | Always |
+| Setup complexity | Higher (partitioning, GRUB) | Lower (just install) |
+| Windows update breaking GRUB | Possible (annoying but fixable) | N/A |
+
+### About the masterclass folder (good news)
+With dual boot, `E:\courses\masterclass` **does not need backing up**. The E: partition is separate from the Windows C: partition. As long as you do **manual partitioning** during Ubuntu install (don't let it auto-resize everything), E: stays intact.
+
+From Linux you can mount the NTFS E: partition and read the files directly:
+```bash
+sudo mkdir -p /mnt/e-drive
+sudo mount -t ntfs-3g /dev/nvme0n1p? /mnt/e-drive   # ? = partition number, find with lsblk
+```
+Then in `docker-compose.yml`, change Jellyfin's mount from `/mnt/e/courses/masterclass:/media:ro` to `/mnt/e-drive/courses/masterclass:/media:ro`. Same files, no copy.
+
+To make the mount permanent, add to `/etc/fstab`:
+```
+UUID=<get-via-blkid>  /mnt/e-drive  ntfs-3g  defaults,uid=1000,gid=1000  0  0
+```
+
+### Pre-install checklist (do ALL before booting the installer)
+
+1. **Back up Jellyfin config from WSL** — settings, library, watch history. WSL's filesystem isn't accessible from bare-metal Linux:
    ```bash
    tar czf ~/jellyfin-backup.tar.gz ~/jellyfin/config
    scp ~/jellyfin-backup.tar.gz mac:~/Desktop/
    ```
-3. **Back up Portainer data** — the `portainer_data` Docker volume:
+2. **Back up Portainer Docker volume** — same reason:
    ```bash
    docker run --rm -v portainer_data:/data -v $HOME:/backup alpine tar czf /backup/portainer-backup.tar.gz -C /data .
    scp ~/portainer-backup.tar.gz mac:~/Desktop/
    ```
-4. **Confirm this repo is pushed** — `cd ~/Desktop/claude/projects/homelab && git status` should show clean. The `docker-compose.yml` and `SETUP.md` are the source of truth for rebuilding services.
-5. **Note current Tailscale IP** of the WSL node (`100.76.108.54`). After migration the new bare-metal node gets a fresh IP — update the SSH alias on Mac and any bookmarks.
-6. **Export any Docker volumes you care about** that aren't already covered (e.g. databases for future services).
-7. **Save Windows product key** (run `wmic path softwarelicensingservice get OA3xOriginalProductKey`) in case you ever want to dual-boot or VM Windows back.
-8. **Personal files** — Documents, Downloads, Desktop, browser bookmarks, anything in `C:\Users\<you>\`. The Windows "Reset this PC → Remove everything" still wipes the user folder.
+3. **Confirm this repo is pushed clean** — `cd ~/Desktop/claude/projects/homelab && git status`. The `docker-compose.yml` is the rebuild spec.
+4. **Defragment Windows C: drive** — Win+R → `dfrgui` → optimize C:. Helps the Ubuntu installer shrink the partition without errors.
+5. **Disable Windows Fast Startup** — Control Panel → Power Options → "Choose what the power buttons do" → uncheck "Turn on fast startup." Otherwise Windows leaves the disk in a half-hibernated state and Linux can't safely mount NTFS partitions.
+6. **Disable BitLocker on C: AND E:** if enabled — Settings → Privacy & Security → Device encryption. Linux can't read encrypted Windows partitions. (Probably not enabled on your laptop, but check.)
+7. **Note your current Windows partition layout** — Win+R → `diskmgmt.msc`, screenshot. Useful if anything goes wrong.
+8. **Decide partition split** — recommend ~60–80 GB for Ubuntu root (`/`), the rest stays Windows. Leave E: alone entirely.
+9. **Make a Ubuntu Server 24.04 LTS USB** — download ISO from ubuntu.com, flash with Rufus (on Windows) or balenaEtcher.
+10. **In BIOS/UEFI: confirm Secure Boot is OFF or that you'll enable shim signing.** Ubuntu's installer handles signed Secure Boot fine, but disabling avoids surprises.
+11. **Save Windows recovery key** (BitLocker recovery, account.microsoft.com) just in case.
 
-### Steps after bootloading Ubuntu Server
+### Install steps (dual-boot specific)
 
-Order matters — each step depends on the previous.
+1. **Boot from USB** — F12 / F2 / Esc at startup (varies by laptop) to pick boot device.
+2. **Choose "Try or Install Ubuntu Server"**.
+3. **Network setup** — connect to Wi-Fi from the installer.
+4. **Storage layout — CRITICAL STEP**:
+   - Pick **"Custom storage layout"** (NOT "Use entire disk").
+   - You'll see existing partitions: `nvme0n1p1` (EFI), `nvme0n1p2` (Microsoft reserved), `nvme0n1p3` (Windows C:), `nvme0n1p4` (recovery), and likely `nvme0n1p?` for E:.
+   - **Shrink the Windows C: partition** (`p3`) to free space. Right-click → resize → leave ~half for Windows, free up ~80–100 GB.
+   - In the freed space, create:
+     - **`/` (root)** — ext4, ~60–80 GB
+     - **swap** — 4 GB (matches your current WSL swap)
+   - Mount the **existing EFI partition** (`p1`, ~100–500 MB) at `/boot/efi` — **do NOT format it**. GRUB goes here alongside the Windows boot manager.
+   - Leave E: partition completely untouched.
+5. **Username**: `yakshith`. **Hostname**: e.g. `homelab`.
+6. **OpenSSH server: yes**. (Lets you ssh in immediately.)
+7. Let installer finish (~20 min). Reboot, remove USB.
+8. **First boot — GRUB menu appears** with two entries:
+   - Ubuntu (default)
+   - Windows Boot Manager
+   Pick Ubuntu. Test Windows boots later.
 
-1. **Install Ubuntu Server 24.04 LTS** (or whatever's current LTS) from a USB. Pick:
-   - OpenSSH server: **yes** (lets you ssh in immediately from Mac via local Wi-Fi)
-   - Username: `yakshith` (same as WSL — keeps muscle memory)
-   - Disk: use the whole disk (no dual-boot — the point is to free all resources for Linux)
-2. **Boot into Ubuntu, log in locally once** to confirm it works.
-3. **Get on Wi-Fi** — `nmtui` for a TUI Wi-Fi picker if not already connected.
-4. **SSH from Mac over local Wi-Fi** to the laptop's LAN IP (one-time, before Tailscale):
+### Post-install setup (in Ubuntu)
+
+1. **Get on Wi-Fi** — `nmtui` for a TUI picker if not already connected.
+2. **Find LAN IP**: `ip a`. SSH from Mac one-time:
    ```bash
-   ssh yakshith@<lan-ip>   # find via `ip a` on the laptop
+   ssh yakshith@<lan-ip>
    ```
-5. **Install Tailscale** (same as WSL section):
+3. **Update**: `sudo apt update && sudo apt upgrade -y`.
+4. **Install ntfs-3g for E: drive access:**
+   ```bash
+   sudo apt install -y ntfs-3g
+   sudo mkdir -p /mnt/e-drive
+   lsblk -f                       # find E: partition's UUID
+   sudo blkid                     # alternative
+   ```
+   Add to `/etc/fstab`:
+   ```
+   UUID=<the-uuid>  /mnt/e-drive  ntfs-3g  defaults,uid=1000,gid=1000,umask=022  0  0
+   ```
+   Mount: `sudo mount -a`. Verify: `ls /mnt/e-drive/courses/masterclass`.
+5. **Install Tailscale**:
    ```bash
    curl -fsSL https://tailscale.com/install.sh | sh
    sudo tailscale up
    ```
-   Auth in browser. Note the new Tailscale IP (`tailscale ip -4`).
-6. **Update Mac SSH config** — change `~/.ssh/config` `Host wsl` block to point at the new Tailscale IP. Optionally rename the alias from `wsl` to `homelab` (no more WSL involved).
-7. **Copy SSH key over** (or re-run `ssh-copy-id`) for passwordless access.
-8. **Disable old WSL node in Tailscale admin** (https://login.tailscale.com/admin/machines) — won't come back, just clutters the list. Also disable the Windows host node.
-9. **Install Docker** (same one-liner):
+   Auth in browser. Note new Tailscale IP.
+6. **Update Mac `~/.ssh/config`** — point `Host wsl` (or rename to `Host homelab`) at the new Tailscale IP.
+7. **Copy SSH key**: `ssh-copy-id yakshith@<new-tailscale-ip>` from Mac.
+8. **In Tailscale admin** — disable the old WSL node and the Windows host node (won't come back when you boot Linux). Re-enable them only on the rare reboots into Windows.
+9. **Install Docker**:
    ```bash
    curl -fsSL https://get.docker.com | sh
    sudo usermod -aG docker $USER
    ```
-   Log out and back in.
-10. **Clone this repo:**
+   Log out / back in.
+10. **Clone repo**:
     ```bash
     git clone https://github.com/Yakshith15/homelab.git ~/homelab
     cd ~/homelab
     ```
-    Now the compose file lives natively on Linux — no more "keep WSL copy and repo copy in sync."
-11. **Restore media** — copy the masterclass backup to a sensible Linux path (e.g. `/home/yakshith/media/masterclass`). Update `docker-compose.yml` jellyfin volume mount from `/mnt/e/courses/masterclass:/media:ro` to `/home/yakshith/media/masterclass:/media:ro`. Commit + push.
-12. **Restore Jellyfin config:**
+11. **Update `docker-compose.yml`** Jellyfin volume:
+    `/mnt/e/courses/masterclass:/media:ro` → `/mnt/e-drive/courses/masterclass:/media:ro`. Commit + push.
+12. **Restore Jellyfin config**:
     ```bash
     mkdir -p ~/jellyfin/cache
-    tar xzf ~/jellyfin-backup.tar.gz -C ~  # restores ~/jellyfin/config
+    tar xzf ~/jellyfin-backup.tar.gz -C ~
     ```
-13. **Restore Portainer volume:**
+13. **Restore Portainer volume**:
     ```bash
     docker volume create portainer_data
     docker run --rm -v portainer_data:/data -v $HOME:/backup alpine sh -c "cd /data && tar xzf /backup/portainer-backup.tar.gz"
     ```
-14. **Bring services up:**
+14. **Bring services up**:
     ```bash
     cd ~/homelab
     docker compose --profile all up -d
     ```
-    Verify Portainer at `https://<new-tailscale-ip>:9443` and Jellyfin at `http://<new-tailscale-ip>:8096`.
-15. **Re-install k3s** (same one-liner, see k3s section once it's added). All your YAML manifests in git apply cleanly to the new cluster — `kubectl apply -f` and you're back.
-16. **Set up auto-start** — Ubuntu Server systemd already auto-starts Docker, Tailscale, k3s on boot. Nothing to configure (unlike WSL Task Scheduler hacks).
-17. **Power management** — for a closed-lid server, edit `/etc/systemd/logind.conf`:
+15. **Re-install k3s** (same one-liner, see k3s section). YAML manifests in git apply cleanly.
+16. **Lid-close behavior** — for a closed-lid server, edit `/etc/systemd/logind.conf`:
     ```
     HandleLidSwitch=ignore
     HandleLidSwitchExternalPower=ignore
     ```
-    Then `sudo systemctl restart systemd-logind`. Equivalent to the Windows power settings step but cleaner.
-18. **Update SETUP.md** to reflect the new architecture (no more WSL section, new Tailscale IP, bare-metal commands instead of WSL-specific ones).
+    Then `sudo systemctl restart systemd-logind`.
+17. **Default boot to Ubuntu** — already the GRUB default unless you changed it. To boot Windows occasionally, just pick it from GRUB menu at startup.
+18. **Update SETUP.md** — replace WSL sections with bare-metal Ubuntu. Update Tailscale IP. Add this dual-boot context.
+
+### Dual-boot gotchas to watch for
+
+- **Windows updates can overwrite GRUB** — symptom: laptop boots straight into Windows, no menu. Fix: boot Ubuntu USB in "Try" mode, run `boot-repair` (or `sudo grub-install` + `sudo update-grub`).
+- **Windows clock is wrong after booting back to Windows** — Linux uses UTC for hardware clock, Windows uses local time, they fight. Fix in Linux: `sudo timedatectl set-local-rtc 1 --adjust-system-clock`.
+- **NTFS partition shows as read-only** — usually means Windows didn't shut down cleanly (Fast Startup left it in hibernation). Boot Windows, properly shut down (Shift+click Shut Down), then back to Linux.
+- **Booting into Windows = homelab is OFF** — for ~30 min of Windows usage, you take the homelab down. Plan accordingly.
 
 ### What you DON'T need to redo
-- Tailscale account + machines (just add new node, remove old)
-- Mac side setup (ssh key, alias — just update IPs)
-- Phone Tailscale + Swiftfin (just update server URL in Swiftfin)
-- The `docker-compose.yml` (works as-is, only paths change)
-- GitHub repo connections
+- Tailscale account
+- Mac SSH config (just update IPs)
+- Phone Tailscale + Swiftfin (just update server URL)
+- The `docker-compose.yml` itself (only one path string changes)
+- GitHub repo
 
 ### Estimated downtime
-~2–4 hours total (Ubuntu install ~30 min, Tailscale + Docker ~15 min, restoring data ~varies by media size, reconfig ~1 hr).
+- Backup: ~30 min
+- Install: ~45 min (incl. partitioning carefully)
+- Tailscale + Docker + restore: ~30 min
+- Total: **~2 hours** (no media copy needed since E: is preserved)
 
 ### When to actually pull the trigger
-- You're consistently bumping into the 5 GB WSL RAM limit
-- You want to add monitoring (Prometheus + Grafana) — they alone use 1+ GB
-- A Windows update breaks WSL or Tailscale (it happens)
-- You no longer need Windows for anything else on this laptop
+- WSL2 RAM ceiling becomes a real problem (you'll see OOM kills on pods, sluggish containers)
+- You want monitoring (Prometheus + Grafana adds ~1 GB by itself)
+- Windows update breaks WSL/Tailscale (it happens)
+- You're comfortable enough with Linux to live in it primarily
 
-Until then, the WSL setup is fine for learning.
+Until then, WSL2 is fine.
 
 ---
 
