@@ -541,14 +541,14 @@ In rough order of priority:
 - [x] **Tailscale on mobile** — done. Phone is on the tailnet.
 - [x] **First real service: Jellyfin** — done. Streaming course videos from E drive to Mac + iPhone (via Swiftfin).
 - [x] **Docker Compose** — done. Both Portainer and Jellyfin now managed via `~/homelab/docker-compose.yml` with profiles (`admin`, `media`, `all`). YAML version-controlled in this repo.
-- [ ] **Bump WSL RAM allocation** — currently 3.7 GB (default ~50% of host). For k3s + multiple services, bump to ~6 GB via `C:\Users\<you>\.wslconfig`:
+- [x] **Bump WSL RAM allocation** — done. `C:\Users\<you>\.wslconfig` now contains:
   ```ini
   [wsl2]
-  memory=6GB
+  memory=5GB
   processors=4
-  swap=2GB
+  swap=4GB
   ```
-  Then `wsl --shutdown` and reopen Ubuntu. Defer until you actually feel the pinch.
+  Host has 8 GB total → WSL gets 5 GB, Windows keeps ~3 GB. Bigger swap (4 GB) compensates for tight RAM. Apply with `wsl --shutdown` then reopen Ubuntu. Verify with `free -h` (should show ~5 GB total, 4 GB swap).
 - [ ] **More services** — pick based on need:
   - Vaultwarden (password manager)
   - Homepage (dashboard)
@@ -561,7 +561,121 @@ In rough order of priority:
 
 ---
 
-## 17. Useful references
+## 17. Future: Bare-metal Linux migration plan
+
+When the Windows + WSL2 setup hits its limits (RAM ceiling, k3s + many services, wanting full Linux control), the long-term plan is to wipe Windows and install Ubuntu Server directly on the laptop. Everything we built transfers over — same compose files, same Tailscale IPs (mostly), same workflow.
+
+### Why migrate eventually
+- Full 8 GB RAM available to the OS (no Windows overhead, no WSL cap)
+- No `wsl --shutdown` quirks, no Windows updates rebooting your server
+- `/mnt/e/...` paths become real Linux paths (faster, no NTFS translation)
+- Closer to "real" production environments — better for learning
+
+### Pre-wipe checklist (CRITICAL — do all before formatting)
+
+1. **Back up media** — `E:\courses\masterclass` (and any other course/video folders). After the wipe, the NTFS partition is gone forever.
+   - Option A: external USB drive (fastest for ~50+ GB of video)
+   - Option B: copy to Mac over Tailscale: `scp -r yakshith@100.76.108.54:/mnt/e/courses/masterclass ~/Desktop/masterclass-backup`
+   - Option C: cloud (Google Drive / OneDrive) — slow on hostel Wi-Fi, last resort
+2. **Back up Jellyfin config** — `~/jellyfin/config` inside WSL has all your library settings, watch history, users:
+   ```bash
+   tar czf ~/jellyfin-backup.tar.gz ~/jellyfin/config
+   scp ~/jellyfin-backup.tar.gz mac:~/Desktop/
+   ```
+3. **Back up Portainer data** — the `portainer_data` Docker volume:
+   ```bash
+   docker run --rm -v portainer_data:/data -v $HOME:/backup alpine tar czf /backup/portainer-backup.tar.gz -C /data .
+   scp ~/portainer-backup.tar.gz mac:~/Desktop/
+   ```
+4. **Confirm this repo is pushed** — `cd ~/Desktop/claude/projects/homelab && git status` should show clean. The `docker-compose.yml` and `SETUP.md` are the source of truth for rebuilding services.
+5. **Note current Tailscale IP** of the WSL node (`100.76.108.54`). After migration the new bare-metal node gets a fresh IP — update the SSH alias on Mac and any bookmarks.
+6. **Export any Docker volumes you care about** that aren't already covered (e.g. databases for future services).
+7. **Save Windows product key** (run `wmic path softwarelicensingservice get OA3xOriginalProductKey`) in case you ever want to dual-boot or VM Windows back.
+8. **Personal files** — Documents, Downloads, Desktop, browser bookmarks, anything in `C:\Users\<you>\`. The Windows "Reset this PC → Remove everything" still wipes the user folder.
+
+### Steps after bootloading Ubuntu Server
+
+Order matters — each step depends on the previous.
+
+1. **Install Ubuntu Server 24.04 LTS** (or whatever's current LTS) from a USB. Pick:
+   - OpenSSH server: **yes** (lets you ssh in immediately from Mac via local Wi-Fi)
+   - Username: `yakshith` (same as WSL — keeps muscle memory)
+   - Disk: use the whole disk (no dual-boot — the point is to free all resources for Linux)
+2. **Boot into Ubuntu, log in locally once** to confirm it works.
+3. **Get on Wi-Fi** — `nmtui` for a TUI Wi-Fi picker if not already connected.
+4. **SSH from Mac over local Wi-Fi** to the laptop's LAN IP (one-time, before Tailscale):
+   ```bash
+   ssh yakshith@<lan-ip>   # find via `ip a` on the laptop
+   ```
+5. **Install Tailscale** (same as WSL section):
+   ```bash
+   curl -fsSL https://tailscale.com/install.sh | sh
+   sudo tailscale up
+   ```
+   Auth in browser. Note the new Tailscale IP (`tailscale ip -4`).
+6. **Update Mac SSH config** — change `~/.ssh/config` `Host wsl` block to point at the new Tailscale IP. Optionally rename the alias from `wsl` to `homelab` (no more WSL involved).
+7. **Copy SSH key over** (or re-run `ssh-copy-id`) for passwordless access.
+8. **Disable old WSL node in Tailscale admin** (https://login.tailscale.com/admin/machines) — won't come back, just clutters the list. Also disable the Windows host node.
+9. **Install Docker** (same one-liner):
+   ```bash
+   curl -fsSL https://get.docker.com | sh
+   sudo usermod -aG docker $USER
+   ```
+   Log out and back in.
+10. **Clone this repo:**
+    ```bash
+    git clone https://github.com/Yakshith15/homelab.git ~/homelab
+    cd ~/homelab
+    ```
+    Now the compose file lives natively on Linux — no more "keep WSL copy and repo copy in sync."
+11. **Restore media** — copy the masterclass backup to a sensible Linux path (e.g. `/home/yakshith/media/masterclass`). Update `docker-compose.yml` jellyfin volume mount from `/mnt/e/courses/masterclass:/media:ro` to `/home/yakshith/media/masterclass:/media:ro`. Commit + push.
+12. **Restore Jellyfin config:**
+    ```bash
+    mkdir -p ~/jellyfin/cache
+    tar xzf ~/jellyfin-backup.tar.gz -C ~  # restores ~/jellyfin/config
+    ```
+13. **Restore Portainer volume:**
+    ```bash
+    docker volume create portainer_data
+    docker run --rm -v portainer_data:/data -v $HOME:/backup alpine sh -c "cd /data && tar xzf /backup/portainer-backup.tar.gz"
+    ```
+14. **Bring services up:**
+    ```bash
+    cd ~/homelab
+    docker compose --profile all up -d
+    ```
+    Verify Portainer at `https://<new-tailscale-ip>:9443` and Jellyfin at `http://<new-tailscale-ip>:8096`.
+15. **Re-install k3s** (same one-liner, see k3s section once it's added). All your YAML manifests in git apply cleanly to the new cluster — `kubectl apply -f` and you're back.
+16. **Set up auto-start** — Ubuntu Server systemd already auto-starts Docker, Tailscale, k3s on boot. Nothing to configure (unlike WSL Task Scheduler hacks).
+17. **Power management** — for a closed-lid server, edit `/etc/systemd/logind.conf`:
+    ```
+    HandleLidSwitch=ignore
+    HandleLidSwitchExternalPower=ignore
+    ```
+    Then `sudo systemctl restart systemd-logind`. Equivalent to the Windows power settings step but cleaner.
+18. **Update SETUP.md** to reflect the new architecture (no more WSL section, new Tailscale IP, bare-metal commands instead of WSL-specific ones).
+
+### What you DON'T need to redo
+- Tailscale account + machines (just add new node, remove old)
+- Mac side setup (ssh key, alias — just update IPs)
+- Phone Tailscale + Swiftfin (just update server URL in Swiftfin)
+- The `docker-compose.yml` (works as-is, only paths change)
+- GitHub repo connections
+
+### Estimated downtime
+~2–4 hours total (Ubuntu install ~30 min, Tailscale + Docker ~15 min, restoring data ~varies by media size, reconfig ~1 hr).
+
+### When to actually pull the trigger
+- You're consistently bumping into the 5 GB WSL RAM limit
+- You want to add monitoring (Prometheus + Grafana) — they alone use 1+ GB
+- A Windows update breaks WSL or Tailscale (it happens)
+- You no longer need Windows for anything else on this laptop
+
+Until then, the WSL setup is fine for learning.
+
+---
+
+## 18. Useful references
 
 - Tailscale admin: https://login.tailscale.com/admin/machines
 - Tailscale docs: https://tailscale.com/kb
