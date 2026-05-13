@@ -352,7 +352,77 @@ Or (cleaner) migrate to docker-compose so changes don't require recreating conta
 
 ---
 
-## 11. Windows power settings (always-on server mode)
+## 11. k3s (lightweight Kubernetes)
+
+k3s is a single-binary Kubernetes distribution that ships in ~70 MB and runs the entire control plane + worker on one node. It's the standard choice for homelab/edge clusters. We installed it inside the WSL2 Ubuntu node.
+
+### Architecture (current)
+- **One node:** the WSL Ubuntu instance is both control plane AND worker (k3s untaints control plane to allow scheduling workloads on it).
+- **Bundled components:** containerd (runtime), Traefik (ingress), CoreDNS, ServiceLB, local-path-provisioner (default StorageClass), metrics-server.
+- **Datastore:** SQLite (not etcd) — fine for single-node, would switch to etcd if going multi-node HA.
+
+### Install (one-time, done)
+```bash
+curl -sfL https://get.k3s.io | sh -
+```
+Auto-creates `k3s.service` in systemd, starts it, configures kubectl symlink at `/usr/local/bin/kubectl`. Auto-starts on WSL boot (`systemctl is-enabled k3s` → `enabled`).
+
+### kubectl without sudo (one-time)
+```bash
+mkdir -p ~/.kube
+sudo cp /etc/rancher/k3s/k3s.yaml ~/.kube/config
+sudo chown $USER:$USER ~/.kube/config
+chmod 600 ~/.kube/config
+```
+
+The k3s-bundled `kubectl` defaults to reading `/etc/rancher/k3s/k3s.yaml` (root-owned) instead of `~/.kube/config`, even when no `$KUBECONFIG` env var is set. Override it explicitly:
+```bash
+export KUBECONFIG=$HOME/.kube/config
+echo 'export KUBECONFIG=$HOME/.kube/config' >> ~/.bashrc
+```
+
+After this, plain `kubectl get nodes` works as your user.
+
+### Day-to-day commands
+```bash
+kubectl get nodes                       # cluster nodes
+kubectl get pods -A                     # all pods, all namespaces
+kubectl get pods -n kube-system         # system pods only
+kubectl get svc -A                      # all services
+kubectl describe pod <pod> -n <ns>      # pod details + events (debug)
+kubectl logs <pod> -n <ns>              # pod logs
+kubectl logs -f <pod> -n <ns>           # follow logs
+kubectl apply -f <manifest.yaml>        # create/update resources
+kubectl delete -f <manifest.yaml>       # delete resources
+kubectl top nodes                       # node CPU/RAM (needs metrics-server, included)
+kubectl top pods -A                     # pod CPU/RAM
+```
+
+### Service operations
+```bash
+sudo systemctl status k3s               # daemon state
+sudo systemctl restart k3s              # restart cluster
+sudo systemctl stop k3s                 # stop cluster (containers stop with it)
+```
+
+### Resource footprint (idle)
+- k3s daemon: ~700 MB–1.4 GB RAM (varies, settles after first few minutes)
+- ~6 system pods running by default
+- Plenty of headroom on a 5 GB WSL allocation for Argo CD + a handful of small apps
+
+### Why k3s vs alternatives
+- **vs minikube/KIND:** those are dev-focused, designed to be torn down. k3s is production-grade (used in real edge deployments), runs in systemd, persists.
+- **vs full kubeadm Kubernetes:** k3s is one binary; kubeadm needs ~6 services. Same Kubernetes API, much less ops burden.
+
+### TODO
+- [ ] **Install Argo CD** for GitOps (push to GitHub → auto-deploy to cluster)
+- [ ] **First app deploy** — sanity-check with nginx, then migrate Jellyfin or deploy Vaultwarden
+- [ ] **Ingress setup** — use bundled Traefik to expose apps at clean paths
+- [ ] **PersistentVolumeClaims** — local-path-provisioner already set up as default StorageClass; PVCs land in `/var/lib/rancher/k3s/storage/`
+
+---
+
+## 12. Windows power settings (always-on server mode)
 
 Goal: laptop keeps running when lid is closed and never sleeps (when plugged in), so the homelab is genuinely always-on.
 
@@ -374,7 +444,7 @@ Result: laptop runs full speed with lid closed, plugged in. Closes the "Tailscal
 
 ---
 
-## 12. Auto-start on Windows boot
+## 13. Auto-start on Windows boot
 
 Goal: when Windows boots, WSL spins up automatically → systemd starts → tailscaled + ssh + docker containers all come online — no manual intervention.
 
@@ -404,7 +474,7 @@ wsl --list --running          # is Ubuntu running?
 
 ---
 
-## 13. Common commands cheatsheet
+## 14. Common commands cheatsheet
 
 ### From Mac
 
@@ -457,7 +527,7 @@ wsl --list --verbose                  # all distros + their state
 
 ---
 
-## 14. Things we learned (gotchas)
+## 15. Things we learned (gotchas)
 
 ### Tailscale CLI not in PATH on Mac (App Store install)
 Symlink to `/usr/local/bin/tailscale` — see Tailscale section.
@@ -518,7 +588,7 @@ Workaround for ad-hoc operations on a single service: name it explicitly — pro
 
 ---
 
-## 15. Resume / restart procedure
+## 16. Resume / restart procedure
 
 After both laptops have been off:
 
@@ -554,10 +624,11 @@ In rough order of priority:
   - Homepage (dashboard)
   - Gitea (self-hosted git)
   - *arr stack (Sonarr/Radarr) if you want auto-organized media
-- [ ] **k3s** — lightweight Kubernetes. `curl -sfL https://get.k3s.io | sh -` inside Ubuntu.
-- [ ] **Reverse proxy** (Caddy or Traefik) — clean URLs (`jellyfin.local`) instead of `100.x.x.x:8096`.
+- [x] **k3s** — done. Single-node cluster (control plane + worker on same node), v1.35.4+k3s1. See section 11a for details.
+- [ ] **Argo CD** — install in cluster for GitOps deploys (push to GitHub → auto-deploy to k3s). See section 11a TODO.
+- [ ] **Reverse proxy** (Caddy or Traefik) — clean URLs (`jellyfin.local`) instead of `100.x.x.x:8096`. Note: k3s already ships Traefik for cluster ingress; can extend it to Compose services too.
 - [ ] **Backup strategy** for persistent Docker volumes.
-- [ ] **(Eventual) bare-metal Linux** — wipe Windows, install Ubuntu Server. Everything we built here transfers 1:1 (same compose files, same configs).
+- [ ] **(Eventual) dual-boot Linux** — see section 17 for the full migration plan.
 
 ---
 
