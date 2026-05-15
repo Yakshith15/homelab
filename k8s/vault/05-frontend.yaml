@@ -1,0 +1,62 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vault-frontend
+  namespace: vault
+  labels:
+    app: vault-frontend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: vault-frontend
+  template:
+    metadata:
+      labels:
+        app: vault-frontend
+    spec:
+      containers:
+        - name: frontend
+          image: ghcr.io/yakshith15/vault-frontend:latest
+          imagePullPolicy: Always
+          ports:
+            - name: http
+              containerPort: 3000
+          env:
+            - name: PORT
+              value: "3000"
+            - name: HOSTNAME
+              value: "0.0.0.0"
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vault-frontend
+  namespace: vault
+spec:
+  type: ClusterIP
+  selector:
+    app: vault-frontend
+  ports:
+    - name: http
+      port: 3000
+      targetPort: http
