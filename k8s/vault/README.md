@@ -115,6 +115,35 @@ kubectl -n vault create secret generic vault-secrets \
 kubectl -n vault rollout restart deploy/vault-backend
 ```
 
+## HTTPS (deferred)
+
+HTTPS is intentionally **not** enabled. Tailscale already encrypts all traffic end-to-end at the network layer (WireGuard), so HTTP between Safari and Traefik travels through an encrypted tunnel and isn't visible to anyone outside the tailnet.
+
+Revisit only if a hosted app needs HTTPS for browser features (clipboard API, service workers, getUserMedia, etc.) or if exposing publicly via Tailscale Funnel.
+
+When ready, the path is:
+
+1. Tailscale admin → DNS → enable **HTTPS Certificates**
+2. Test cert: `sudo tailscale cert homelab.tailbed621.ts.net`
+3. Free host port 443 by disabling Traefik's `websecure` entrypoint via a `HelmChartConfig` in `/var/lib/rancher/k3s/server/manifests/traefik-config.yaml`:
+   ```yaml
+   apiVersion: helm.cattle.io/v1
+   kind: HelmChartConfig
+   metadata:
+     name: traefik
+     namespace: kube-system
+   spec:
+     valuesContent: |-
+       ports:
+         websecure:
+           expose:
+             default: false
+   ```
+4. `sudo tailscale serve --bg https / http://localhost:80`
+5. Verify `https://homelab.tailbed621.ts.net/` shows a valid Let's Encrypt cert.
+
+The complexity here comes from three systems overlapping (k3s svclb LoadBalancer, Traefik entrypoints, Tailscale userspace networking). Most other homelab tasks don't touch this stack.
+
 ## Tear down
 
 ```bash
