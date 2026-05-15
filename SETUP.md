@@ -25,12 +25,16 @@ Constraints we cared about:
   │     Mac     │ ◄──────── (encrypted) ──────────► │  Windows laptop     │
   │  (client)   │                                   │  ┌───────────────┐  │
   └─────────────┘                                   │  │ WSL2 Ubuntu   │  │
-         ▲                                          │  │  - Tailscale  │  │
-         │                                          │  │  - SSH server │  │
-  ┌─────────────┐                                   │  │  - Docker     │  │
-  │   Phone     │ ◄──────── (encrypted) ──────────► │  │  - Portainer  │  │
-  │  (client)   │                                   │  │  - Jellyfin   │  │
-  └─────────────┘                                   │  └───────────────┘  │
+         ▲                                          │  │ (`homelab`)   │  │
+         │                                          │  │  - Tailscale  │  │
+  ┌─────────────┐                                   │  │  - SSH server │  │
+  │   Phone     │ ◄──────── (encrypted) ──────────► │  │  - Docker +   │  │
+  │  (client)   │                                   │  │    Jellyfin   │  │
+  └─────────────┘                                   │  │  - k3s        │  │
+                                                    │  │    - Traefik  │  │
+                                                    │  │    - vault    │  │
+                                                    │  │    - headlamp │  │
+                                                    │  └───────────────┘  │
                                                     └─────────────────────┘
 ```
 
@@ -49,9 +53,13 @@ Why this design:
 |---|---|---|---|
 | Mac | Dev client | (check `tailscale status`) | macOS user |
 | Windows host | Hypervisor + Tailscale relay | 100.82.126.74 | Windows user |
-| Ubuntu (WSL) | Server (Docker, SSH) | **100.76.108.54** | `yakshith` |
+| Ubuntu (WSL) | Server (Docker, k3s, SSH) | **100.76.108.54** | `yakshith` |
 
 Hostname inside WSL: `DESKTOP-6BCH3H9` (same as Windows host).
+
+Tailscale machine name (MagicDNS): **`homelab`** (renamed in Tailscale admin from the original `desktop-6bch3h9-1`). Resolves on any tailnet device:
+- Short: `http://homelab/`
+- FQDN: `http://homelab.tailbed621.ts.net/`
 
 SSH alias on Mac: `ssh wsl` → connects to Ubuntu.
 
@@ -203,22 +211,13 @@ Note: we **uninstalled Docker Desktop on Windows** before this — Docker Deskto
 
 ---
 
-## 8. Portainer (web UI for Docker)
+## 8. Portainer (REMOVED)
 
-One-time install:
-```bash
-docker volume create portainer_data
-docker run -d -p 9443:9443 --name portainer --restart=always \
-  -v /var/run/docker.sock:/var/run/docker.sock \
-  -v portainer_data:/data \
-  portainer/portainer-ce:latest
-```
+Originally installed as a Docker UI. **Removed** once everything moved into k3s — Portainer's k8s support is shallower than purpose-built k8s dashboards, and we no longer have a meaningful Docker workload outside k3s (Jellyfin is the only one left, managed via compose).
 
-Access from Mac browser: **https://100.76.108.54:9443** (HTTPS, not HTTP — accept self-signed cert warning).
+Replaced by **Headlamp** (in-cluster k8s dashboard) — see §11.2.
 
-Set admin user/password on first visit. Click into the **local** environment to manage everything.
-
-`--restart=always` means it auto-comes-back after reboots.
+Teardown was just `docker stop portainer && docker rm portainer && docker volume rm portainer_data && docker rmi portainer/portainer-ce`.
 
 ---
 
@@ -415,10 +414,46 @@ sudo systemctl stop k3s                 # stop cluster (containers stop with it)
 - **vs full kubeadm Kubernetes:** k3s is one binary; kubeadm needs ~6 services. Same Kubernetes API, much less ops burden.
 
 ### TODO
+- [x] **First app deploy** — done. Vault (FastAPI + Next.js + SQLite + Gemini) deployed to k3s. See §11.1.
+- [x] **Ingress setup** — done. Traefik routes `/api/*` → backend, `/*` → frontend, `/headlamp/*` → headlamp.
+- [x] **PersistentVolumeClaims** — done. `vault-data` PVC (2 Gi, local-path) holds vault's SQLite + content directory at `/var/lib/rancher/k3s/storage/`.
+- [x] **k8s dashboard** — done. Headlamp at `http://homelab/headlamp/`. See §11.2.
 - [ ] **Install Argo CD** for GitOps (push to GitHub → auto-deploy to cluster)
-- [ ] **First app deploy** — sanity-check with nginx, then migrate Jellyfin or deploy Vaultwarden
-- [ ] **Ingress setup** — use bundled Traefik to expose apps at clean paths
-- [ ] **PersistentVolumeClaims** — local-path-provisioner already set up as default StorageClass; PVCs land in `/var/lib/rancher/k3s/storage/`
+- [ ] **HTTPS via Tailscale Serve** — deferred (Tailscale already encrypts at network layer). Path documented in `k8s/vault/README.md` if/when needed.
+- [ ] **Backup strategy** for the `vault-data` PVC (rsync host-path to NAS or S3)
+
+---
+
+## 11.1. Vault (deployed app)
+
+Personal knowledge-vault app — FastAPI backend + Next.js frontend + SQLite + Claude/Gemini analysis. Lives at `vault/` in [a separate repo](https://github.com/Yakshith15/vault); deployed to this cluster from manifests in `k8s/vault/`.
+
+URL: <http://homelab/>
+
+Manifests + ops docs (deploy, scale, rolling, data migration, env updates, teardown) live in [`k8s/vault/README.md`](k8s/vault/README.md).
+
+Key facts:
+- Namespace: `vault`
+- Image source: GHCR (`ghcr.io/yakshith15/vault-backend:latest`, `ghcr.io/yakshith15/vault-frontend:latest`) — built by GHA on every push to vault repo `main`.
+- Frontend `NEXT_PUBLIC_API_URL=/api` (relative URL → same-origin → no CORS issues regardless of which hostname the user hits).
+- New images picked up via `kubectl -n vault rollout restart deploy/vault-frontend` (or backend).
+- Stop/start workflow: scale to 0 / 1 either via `kubectl -n vault scale deploy --all --replicas=0/1` or click in Headlamp.
+
+---
+
+## 11.2. Headlamp (k8s dashboard)
+
+In-cluster web UI for managing the cluster — scale, logs, exec, edit manifests, etc. Replaced Portainer once everything moved into k3s.
+
+URL: <http://homelab/headlamp/>
+
+Manifests + ops docs (deploy, token generation, daily-use shortcuts, teardown) live in [`k8s/headlamp/README.md`](k8s/headlamp/README.md).
+
+Key facts:
+- Namespace: `headlamp`
+- ServiceAccount bound to `cluster-admin` (single-user homelab; scope down if more users are added).
+- Login: Bearer token. Mint with `kubectl -n headlamp create token headlamp --duration=8760h` (1-year token).
+- `-base-url=/headlamp` arg on the deployment lets it serve cleanly behind the `/headlamp/` ingress path (no stripPrefix middleware needed).
 
 ---
 
@@ -619,15 +654,19 @@ In rough order of priority:
   swap=4GB
   ```
   Host has 8 GB total → WSL gets 5 GB, Windows keeps ~3 GB. Bigger swap (4 GB) compensates for tight RAM. Apply with `wsl --shutdown` then reopen Ubuntu. Verify with `free -h` (should show ~5 GB total, 4 GB swap).
+- [x] **k3s** — done. Single-node cluster (control plane + worker on same node), v1.35.4+k3s1. See §11.
+- [x] **First k3s app** — done. Vault deployed (§11.1) end-to-end via manifests in `k8s/vault/`.
+- [x] **k3s dashboard** — done. Headlamp at `http://homelab/headlamp/` (§11.2).
+- [x] **Friendly hostname** — done. Tailscale machine renamed to `homelab` → reachable at `http://homelab/` from any tailnet device.
 - [ ] **More services** — pick based on need:
   - Vaultwarden (password manager)
   - Homepage (dashboard)
   - Gitea (self-hosted git)
   - *arr stack (Sonarr/Radarr) if you want auto-organized media
-- [x] **k3s** — done. Single-node cluster (control plane + worker on same node), v1.35.4+k3s1. See section 11a for details.
-- [ ] **Argo CD** — install in cluster for GitOps deploys (push to GitHub → auto-deploy to k3s). See section 11a TODO.
-- [ ] **Reverse proxy** (Caddy or Traefik) — clean URLs (`jellyfin.local`) instead of `100.x.x.x:8096`. Note: k3s already ships Traefik for cluster ingress; can extend it to Compose services too.
-- [ ] **Backup strategy** for persistent Docker volumes.
+- [ ] **Argo CD** — install in cluster for GitOps deploys (push to GitHub → auto-deploy to k3s). Worth it once we have 3+ services.
+- [ ] **HTTPS via Tailscale Serve** — deferred; Tailscale already encrypts at network layer. Steps documented in `k8s/vault/README.md`.
+- [ ] **Persist WSL DNS fix** — set `[network] generateResolvConf = false` AND `tailscale set --accept-dns=false` so manual nameservers in `/etc/resolv.conf` survive sleep/resume + WSL restarts. Currently fixed manually each time it bites.
+- [ ] **Backup strategy** for the `vault-data` PVC (rsync host-path to NAS or S3) and any other PVCs added later.
 - [ ] **(Eventual) dual-boot Linux** — see section 17 for the full migration plan.
 
 ---
@@ -820,6 +859,8 @@ Until then, WSL2 is fine.
 - Tailscale docs: https://tailscale.com/kb
 - WSL docs: https://learn.microsoft.com/en-us/windows/wsl/
 - Docker docs: https://docs.docker.com/
-- Portainer docs: https://docs.portainer.io/
+- k3s docs: https://docs.k3s.io/
+- Headlamp docs: https://headlamp.dev/docs/latest/
+- Traefik (k3s bundled) docs: https://doc.traefik.io/traefik/
 - Jellyfin docs: https://jellyfin.org/docs/
 - Swiftfin (iOS client): https://github.com/jellyfin/Swiftfin
