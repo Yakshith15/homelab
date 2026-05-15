@@ -128,10 +128,56 @@ Or `rclone sync` to another S3 / cloud destination.
 ## Notes
 
 - **Single-drive mode**: this is a single-node, single-drive deployment — no erasure coding, no replication. If `D:\minio-data\` is corrupted/lost, the data is gone. Worth setting up rsync to E: or external NAS for anything important.
-- **Don't touch `D:\minio-data\.minio.sys\`**: that's MinIO's internal metadata (IAM, bucket configs). Editing it directly can corrupt the install.
-- **Adding files via Windows Explorer**: technically possible (you can drag a file into `D:\minio-data\photos\`), but bypasses MinIO's metadata layer. Prefer uploading via API/CLI/console so MinIO tracks it properly.
+- **Don't touch `D:\minio-data\` directly**: MinIO stores each object in its own internal "XL" format — a directory named after the object, containing `xl.meta` (metadata) and one or more `part.N` files (raw bytes, no extension). The on-disk layout is **not** a 1:1 mirror of your buckets/files. Treat the folder as MinIO's internal database, not as a file browser.
+- **Don't touch `.minio.sys\`**: that's MinIO's internal config (IAM, bucket policies). Editing it can corrupt the install.
+- **All real interaction happens via the S3 API**: web console, `mc`, `aws cli`, boto3, rclone, or a mounted client (see "Viewing files in Windows / Mac" below).
 - **Image pinned to `:latest`**: `kubectl rollout restart deploy/minio` picks up new versions. Pin to a specific `RELEASE.YYYY-MM-DD` tag if you want stability.
 - **Expansion**: if D: fills up, you can add E: as an additional pool — needs a redeploy with a new MinIO server pool (out of scope of this initial setup).
+
+## Viewing files in Windows / Mac
+
+Since on-disk files aren't directly browseable (see the note above), use one of these to interact with buckets like a normal folder:
+
+### Option A: Cyberduck (easiest, GUI, both OSes)
+1. Install: <https://cyberduck.io/> (free)
+2. **File → Open Connection → Amazon S3**
+3. Server: `homelab`, Port: `9000`, Path: leave blank
+4. Access Key: `admin`, Secret Key: your MinIO root password
+5. **More Options → Use Insecure Connection (HTTP)** since we're not on HTTPS
+6. Connect → buckets show as folders, drag-drop works both ways
+
+### Option B: rclone mount as a drive letter (Windows)
+Gives you a real `M:\` drive that looks like a normal folder.
+
+1. Install **WinFsp**: <https://winfsp.dev/> (FUSE for Windows)
+2. Install **rclone**: <https://rclone.org/install/>
+3. Configure:
+   ```
+   rclone config
+   # New remote → name: homelab → type: s3 → provider: Minio
+   # Access key: admin, Secret: <password>
+   # Endpoint: http://homelab:9000
+   # Region: us-east-1 (placeholder)
+   ```
+4. Mount:
+   ```
+   rclone mount homelab: M: --vfs-cache-mode writes
+   ```
+5. Open Windows Explorer → `M:\` shows all your buckets as top-level folders, files inside look like normal files. Drag-drop works.
+
+To auto-mount on login: schedule the rclone command via Task Scheduler (similar pattern to WSL auto-start).
+
+### Option C: rclone mount on Mac (FUSE-T or macFUSE)
+Same as Option B but install macFUSE/FUSE-T instead of WinFsp. Mount to e.g. `~/minio` and it shows as a folder in Finder.
+
+### Option D: `mc mirror` to keep a local copy in sync
+Periodic one-way sync from MinIO → a real folder on disk:
+```bash
+mc mirror homelab/photos D:\minio-mirror\photos
+```
+Then `D:\minio-mirror\photos` has the actual files. Re-run to sync changes. Useful for "always have a real local copy" but doubles your storage footprint.
+
+**Recommendation**: Cyberduck for casual browsing, rclone mount when you want a real drive letter that other apps (Photos, video players, etc.) can open files from directly.
 
 ## Tear down
 
