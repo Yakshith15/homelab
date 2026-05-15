@@ -146,26 +146,65 @@ Since on-disk files aren't directly browseable (see the note above), use one of 
 5. **More Options → Use Insecure Connection (HTTP)** since we're not on HTTPS
 6. Connect → buckets show as folders, drag-drop works both ways
 
-### Option B: rclone mount as a drive letter (Windows)
-Gives you a real `M:\` drive that looks like a normal folder.
+### Option B: rclone mount as a drive letter (Windows) — **current setup**
+Gives you a real `M:\` drive that looks like a normal folder. Buckets appear as top-level folders, files inside are real files (double-click opens them in their default app). Drag-drop works both directions and syncs to MinIO in real time.
 
-1. Install **WinFsp**: <https://winfsp.dev/> (FUSE for Windows)
-2. Install **rclone**: <https://rclone.org/install/>
-3. Configure:
-   ```
-   rclone config
-   # New remote → name: homelab → type: s3 → provider: Minio
-   # Access key: admin, Secret: <password>
-   # Endpoint: http://homelab:9000
-   # Region: us-east-1 (placeholder)
-   ```
-4. Mount:
-   ```
-   rclone mount homelab: M: --vfs-cache-mode writes
-   ```
-5. Open Windows Explorer → `M:\` shows all your buckets as top-level folders, files inside look like normal files. Drag-drop works.
+#### One-time install (already done)
 
-To auto-mount on login: schedule the rclone command via Task Scheduler (similar pattern to WSL auto-start).
+1. **WinFsp**: download `.msi` from <https://winfsp.dev/rel/> → run installer (no reboot needed). Verify:
+   ```powershell
+   Get-Service WinFsp.Launcher
+   ```
+2. **rclone** via winget:
+   ```powershell
+   winget install Rclone.Rclone
+   ```
+3. **Configure rclone remote** (one command, substitute your MinIO password):
+   ```powershell
+   rclone config create homelab s3 provider Minio access_key_id admin secret_access_key "<your-password>" region us-east-1 endpoint http://homelab:9000
+   ```
+4. Verify the connection:
+   ```powershell
+   rclone lsd homelab:
+   ```
+
+#### Mount on demand (current workflow)
+
+When you want `M:\` available, open **Windows PowerShell** and run:
+
+```powershell
+rclone mount homelab: M: --vfs-cache-mode writes
+```
+
+- The PowerShell window stays **blocked** while the mount is active — keep it open.
+- `M:\` shows up in Explorer immediately.
+- To unmount: **Ctrl+C** in that PowerShell window. `M:\` disappears.
+
+If you want it persistent across reboots, register it as a Task Scheduler task (run at logon, hidden) — not done currently.
+
+#### Alternative install path (rclone via zip on D:)
+If you prefer rclone NOT on C:, skip winget and instead:
+1. Download zip from <https://rclone.org/downloads/> → extract to `D:\tools\rclone\`
+2. Add to PATH:
+   ```powershell
+   [Environment]::SetEnvironmentVariable("Path", $env:Path + ";D:\tools\rclone", "Machine")
+   ```
+3. Reopen PowerShell.
+
+---
+
+#### (Reference) full interactive rclone config
+If you ever need to redo step 3 interactively instead of using `rclone config create`:
+```
+rclone config
+# New remote → name: homelab → type: s3 → provider: Minio
+# env_auth: false
+# access_key_id: admin
+# secret_access_key: <password>
+# region: us-east-1 (placeholder)
+# endpoint: http://homelab:9000
+# (skip the rest with Enter)
+```
 
 ### Option C: rclone mount on Mac (FUSE-T or macFUSE)
 Same as Option B but install macFUSE/FUSE-T instead of WinFsp. Mount to e.g. `~/minio` and it shows as a folder in Finder.

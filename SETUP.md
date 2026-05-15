@@ -477,7 +477,12 @@ Key facts:
 - Single-node, single-drive mode — no erasure coding/replication. Set up rsync to E: or NAS for anything important.
 - Credentials in `minio-secrets` (root user/password). Rotate via `kubectl delete secret + create + rollout restart`.
 - Pod runs as uid 1000 to match the `chown 1000:1000 /mnt/d/minio-data` on the host.
-- Browseable from Windows Explorer at `D:\minio-data\` (each top-level folder = one bucket; don't touch `.minio.sys\`).
+- **Don't browse `D:\minio-data\` directly**: MinIO stores objects in its internal "XL" format (object/xl.meta + part.N), not as plain files. Treat that folder as MinIO's database.
+- **To view buckets like a normal Windows folder**: rclone mount via WinFsp gives you a real `M:\` drive (current setup). Manual mount on demand:
+  ```powershell
+  rclone mount homelab: M: --vfs-cache-mode writes
+  ```
+  Keep that PowerShell window open while you want the drive available; Ctrl+C to unmount. Full install + config steps in the per-app README.
 
 ---
 
