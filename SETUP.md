@@ -34,6 +34,7 @@ Constraints we cared about:
                                                     │  │    - Traefik  │  │
                                                     │  │    - vault    │  │
                                                     │  │    - headlamp │  │
+                                                    │  │    - minio    │  │
                                                     │  └───────────────┘  │
                                                     └─────────────────────┘
 ```
@@ -418,6 +419,7 @@ sudo systemctl stop k3s                 # stop cluster (containers stop with it)
 - [x] **Ingress setup** — done. Traefik routes `/api/*` → backend, `/*` → frontend, `/headlamp/*` → headlamp.
 - [x] **PersistentVolumeClaims** — done. `vault-data` PVC (2 Gi, local-path) holds vault's SQLite + content directory at `/var/lib/rancher/k3s/storage/`.
 - [x] **k8s dashboard** — done. Headlamp at `http://homelab/headlamp/`. See §11.2.
+- [x] **Object storage (S3-compatible)** — done. MinIO at `http://homelab:9000` (API) and `:9001` (console), data on Windows D: drive. See §11.3.
 - [ ] **Install Argo CD** for GitOps (push to GitHub → auto-deploy to cluster)
 - [ ] **HTTPS via Tailscale Serve** — deferred (Tailscale already encrypts at network layer). Path documented in `k8s/vault/README.md` if/when needed.
 - [ ] **Backup strategy** for the `vault-data` PVC (rsync host-path to NAS or S3)
@@ -454,6 +456,28 @@ Key facts:
 - ServiceAccount bound to `cluster-admin` (single-user homelab; scope down if more users are added).
 - Login: Bearer token. Mint with `kubectl -n headlamp create token headlamp --duration=8760h` (1-year token).
 - `-base-url=/headlamp` arg on the deployment lets it serve cleanly behind the `/headlamp/` ingress path (no stripPrefix middleware needed).
+
+---
+
+## 11.3. MinIO (S3-compatible object storage)
+
+Self-hosted S3 replacement. Used as the homelab's general blob store — media, backups, documents, anything that'd otherwise live in S3.
+
+| Endpoint | URL |
+|---|---|
+| S3 API (SDKs, `aws cli`, `mc`, rclone) | <http://homelab:9000> |
+| Web console | <http://homelab:9001> |
+
+Manifests + ops docs (deploy, credentials, mc/aws/boto3 client setup, backups, teardown) live in [`k8s/minio/README.md`](k8s/minio/README.md).
+
+Key facts:
+- Namespace: `minio`
+- **Storage lives on Windows D: drive**, not in WSL — `D:\minio-data\` is mounted into the pod via `hostPath: /mnt/d/minio-data`. Keeps the C: SSD free, gives ~287 GB on the HDD.
+- Service type **LoadBalancer** (not Ingress) — exposes 9000/9001 directly on the WSL host. Path-prefixed Ingress would break presigned URLs and S3 SDK host expectations.
+- Single-node, single-drive mode — no erasure coding/replication. Set up rsync to E: or NAS for anything important.
+- Credentials in `minio-secrets` (root user/password). Rotate via `kubectl delete secret + create + rollout restart`.
+- Pod runs as uid 1000 to match the `chown 1000:1000 /mnt/d/minio-data` on the host.
+- Browseable from Windows Explorer at `D:\minio-data\` (each top-level folder = one bucket; don't touch `.minio.sys\`).
 
 ---
 
@@ -657,6 +681,7 @@ In rough order of priority:
 - [x] **k3s** — done. Single-node cluster (control plane + worker on same node), v1.35.4+k3s1. See §11.
 - [x] **First k3s app** — done. Vault deployed (§11.1) end-to-end via manifests in `k8s/vault/`.
 - [x] **k3s dashboard** — done. Headlamp at `http://homelab/headlamp/` (§11.2).
+- [x] **Object storage (S3-compatible)** — done. MinIO with data on Windows D: drive (§11.3).
 - [x] **Friendly hostname** — done. Tailscale machine renamed to `homelab` → reachable at `http://homelab/` from any tailnet device.
 - [ ] **More services** — pick based on need:
   - Vaultwarden (password manager)
@@ -666,7 +691,7 @@ In rough order of priority:
 - [ ] **Argo CD** — install in cluster for GitOps deploys (push to GitHub → auto-deploy to k3s). Worth it once we have 3+ services.
 - [ ] **HTTPS via Tailscale Serve** — deferred; Tailscale already encrypts at network layer. Steps documented in `k8s/vault/README.md`.
 - [ ] **Persist WSL DNS fix** — set `[network] generateResolvConf = false` AND `tailscale set --accept-dns=false` so manual nameservers in `/etc/resolv.conf` survive sleep/resume + WSL restarts. Currently fixed manually each time it bites.
-- [ ] **Backup strategy** for the `vault-data` PVC (rsync host-path to NAS or S3) and any other PVCs added later.
+- [ ] **Backup strategy** for the `vault-data` PVC and `D:\minio-data\` (rsync host-paths to NAS, or use rclone to push to a cloud S3 bucket — fitting now that MinIO speaks S3 too).
 - [ ] **(Eventual) dual-boot Linux** — see section 17 for the full migration plan.
 
 ---
@@ -861,6 +886,8 @@ Until then, WSL2 is fine.
 - Docker docs: https://docs.docker.com/
 - k3s docs: https://docs.k3s.io/
 - Headlamp docs: https://headlamp.dev/docs/latest/
+- MinIO docs: https://min.io/docs/minio/linux/index.html
+- MinIO Client (`mc`): https://min.io/docs/minio/linux/reference/minio-mc.html
 - Traefik (k3s bundled) docs: https://doc.traefik.io/traefik/
 - Jellyfin docs: https://jellyfin.org/docs/
 - Swiftfin (iOS client): https://github.com/jellyfin/Swiftfin
