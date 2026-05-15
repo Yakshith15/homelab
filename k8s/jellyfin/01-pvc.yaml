@@ -1,0 +1,15 @@
+# Config PVC: stays on WSL ext4 (local-path) for SQLite safety + speed.
+# Cache is NOT a PVC — it's a hostPath to D:\jellyfin-cache (see 02-deployment.yaml)
+# to keep large transcode/thumbnail data off the C: SSD.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: jellyfin-config
+  namespace: jellyfin
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 5Gi
