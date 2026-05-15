@@ -63,6 +63,45 @@ kubectl -n vault rollout status deploy/vault-backend
 
 (When Argo CD lands, this becomes automatic — Argo will see the new commit in this repo and reconcile.)
 
+## Migrating existing data into the PVC
+
+When you already have a `vault.db` and `content/` from running vault locally (Mac or anywhere else), you can copy them into the cluster's PVC. The PVC starts empty on first deploy — the local file and the in-cluster file are completely separate volumes.
+
+**On the source machine (e.g., Mac):**
+```bash
+scp ~/Desktop/claude/projects/vault/backend/data/vault.db wsl:/tmp/vault.db
+scp -r ~/Desktop/claude/projects/vault/backend/data/content wsl:/tmp/content
+```
+
+If SQLite was running on the source recently, flush the WAL first to avoid losing in-flight writes:
+```bash
+sqlite3 ~/Desktop/claude/projects/vault/backend/data/vault.db "PRAGMA wal_checkpoint(TRUNCATE);"
+```
+
+**On WSL:**
+```bash
+# Stop the backend so SQLite isn't open while we overwrite it
+kubectl -n vault scale deploy/vault-backend --replicas=0
+
+# Find the PVC's host path
+PVC_PATH=$(sudo find /var/lib/rancher/k3s/storage -maxdepth 1 -type d -name "*vault-data*")
+echo "PVC at: $PVC_PATH"
+
+# Copy in
+sudo cp /tmp/vault.db "$PVC_PATH/vault.db"
+sudo mkdir -p "$PVC_PATH/content"
+sudo cp -r /tmp/content/* "$PVC_PATH/content/" 2>/dev/null || true
+
+# Backend container runs as UID 10001 — fix ownership so it can read/write
+sudo chown -R 10001:10001 "$PVC_PATH"
+
+# Bring the backend back up
+kubectl -n vault scale deploy/vault-backend --replicas=1
+kubectl -n vault rollout status deploy/vault-backend
+```
+
+Refresh the frontend at <http://100.76.108.54> to confirm your data shows up.
+
 ## Updating env vars
 
 Edit `02-configmap.yaml`, `kubectl apply -f 02-configmap.yaml`, then restart the backend (envFrom doesn't hot-reload).
