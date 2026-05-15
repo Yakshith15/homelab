@@ -28,13 +28,14 @@ Constraints we cared about:
          ▲                                          │  │ (`homelab`)   │  │
          │                                          │  │  - Tailscale  │  │
   ┌─────────────┐                                   │  │  - SSH server │  │
-  │   Phone     │ ◄──────── (encrypted) ──────────► │  │  - Docker +   │  │
-  │  (client)   │                                   │  │    Jellyfin   │  │
+  │   Phone     │ ◄──────── (encrypted) ──────────► │  │  - Docker     │  │
+  │  (client)   │                                   │  │    (idle)     │  │
   └─────────────┘                                   │  │  - k3s        │  │
                                                     │  │    - Traefik  │  │
                                                     │  │    - vault    │  │
                                                     │  │    - headlamp │  │
                                                     │  │    - minio    │  │
+                                                    │  │    - jellyfin │  │
                                                     │  └───────────────┘  │
                                                     └─────────────────────┘
 ```
@@ -222,133 +223,24 @@ Teardown was just `docker stop portainer && docker rm portainer && docker volume
 
 ---
 
-## 9. Docker Compose (homelab service orchestration)
+## 9. Docker Compose (DEPRECATED — all services moved to k3s)
 
-All services are now declared in a single `docker-compose.yml` file at `~/homelab/docker-compose.yml` (on the Ubuntu node). Profiles let us bring up subsets of services on demand.
+There used to be a `docker-compose.yml` here orchestrating Portainer and Jellyfin via profiles (`admin`, `media`, `all`). Both services are now in k3s:
 
-### File location
-- **On Ubuntu (live, what Docker reads):** `/home/yakshith/homelab/docker-compose.yml`
-- **In this repo (version-controlled copy):** `docker-compose.yml` next to this file.
+- Portainer → removed (replaced by **Headlamp**, see §11.2)
+- Jellyfin → migrated to k3s (see §11.4)
 
-Keep them in sync — when you edit on one side, copy to the other. (Future improvement: clone this GitHub repo on the Ubuntu node directly, so there's only one source.)
+Docker is still installed on the Ubuntu node (k3s uses containerd, not Docker, but Docker remains available for ad-hoc container runs). No services currently rely on raw Docker / docker-compose.
 
-### Profiles
-Each service is tagged with one or more profiles. Currently:
-- `portainer` → profiles `admin`, `all`
-- `jellyfin` → profiles `media`, `all`
-
-### Day-to-day commands
-
-From `~/homelab/` on Ubuntu:
-
-```bash
-# Bring up everything
-docker compose --profile all up -d
-
-# Bring up just the media stack
-docker compose --profile media up -d
-
-# Bring up just admin tools
-docker compose --profile admin up -d
-
-# Stop everything (containers persist, just stopped)
-docker compose stop
-
-# Stop + remove containers (volumes/data stay)
-docker compose down
-
-# Stop + remove a single service
-docker compose stop jellyfin
-docker compose rm -f jellyfin
-
-# Tail logs
-docker compose logs -f jellyfin
-
-# Validate yaml without running
-docker compose --profile all config
-
-# Recreate after editing the yaml
-docker compose --profile all up -d --force-recreate
-```
-
-### Adding a new service
-
-1. Add a new block under `services:` in `docker-compose.yml`.
-2. Pick its profile(s) — `media`, `admin`, or a new one like `dev`, `monitoring`, etc.
-3. `docker compose --profile <profile> up -d` to start it.
-4. Commit + push the updated yaml.
-
-### Migration history (one-time, done)
-The original Portainer and Jellyfin containers were created with raw `docker run` commands. We migrated to compose by:
-1. `docker stop portainer jellyfin && docker rm portainer jellyfin` (data preserved in named volume + bind mounts).
-2. Wrote `docker-compose.yml` declaring both services. Used `external: true` on `portainer_data` volume to reuse the existing one.
-3. `docker compose --profile all up -d`.
-4. Verified both services came back with all data and settings intact.
+The legacy `docker-compose.yml` was deleted from this repo (commit history preserves it). If a future service genuinely needs to be Docker-only (vs k3s), recreate the file then.
 
 ---
 
-## 10. Jellyfin (media streaming server)
+## 10. Jellyfin (MIGRATED — see §11.4)
 
-A Docker container that serves your video library to phone, Mac, anywhere on the tailnet. Free, open source, no account/tracking.
+Originally ran as a Docker container with config+cache on WSL ext4 and media on `E:\courses\masterclass`. Migrated to k3s on 2026-05-15 with config+library/watch-history preserved by copying `~/jellyfin/config` into the new PVC.
 
-### Prep
-Verify the Windows drive folder is accessible from WSL:
-```bash
-ls /mnt/e/courses/masterclass
-```
-(WSL exposes Windows drives at `/mnt/<drive-letter>/`.)
-
-Create config + cache directories on Linux side (Jellyfin database lives here — must NOT be on the Windows mount):
-```bash
-mkdir -p ~/jellyfin/config ~/jellyfin/cache
-```
-
-### Run
-```bash
-docker run -d \
-  --name jellyfin \
-  --restart=unless-stopped \
-  -p 8096:8096 \
-  -v ~/jellyfin/config:/config \
-  -v ~/jellyfin/cache:/cache \
-  -v /mnt/e/courses/masterclass:/media:ro \
-  jellyfin/jellyfin
-```
-
-Flag breakdown:
-- `-p 8096:8096` — Jellyfin web UI
-- `-v ~/jellyfin/config:/config` — Jellyfin's database/settings (persistent)
-- `-v ~/jellyfin/cache:/cache` — image/transcode cache
-- `-v /mnt/e/courses/masterclass:/media:ro` — your video folder, **read-only** (`:ro`) so Jellyfin can't modify files
-- `--restart=unless-stopped` — comes back after reboots / docker restarts
-
-### First-run setup
-Open `http://100.76.108.54:8096` in browser. Wizard:
-1. Language: English, Server name: anything.
-2. Create admin user.
-3. Add media library:
-   - Content type: **Home Videos** for courses (skips Movie/TV metadata matching, which won't find anything for course files).
-   - Folder: `/media` (this is what the container sees — actually maps to `/mnt/e/courses/masterclass` outside).
-4. Metadata language + country → English / India.
-5. Remote access: leave **Allow remote connections** checked.
-
-### Clients
-Server is the same — clients differ:
-- **Mac**: browser at `http://100.76.108.54:8096` (or Jellyfin Media Player app).
-- **iOS**: **Swiftfin** (free, recommended) or **Infuse** (paid, fancier) or **Jellyfin Mobile** (official, basic).
-- **Android**: Findroid (free, native) or official Jellyfin app.
-
-In any client: Add Server → URL `http://100.76.108.54:8096` → sign in.
-
-### Adding more media later
-Just add another `-v` mount. E.g. for movies on D drive:
-```bash
-docker stop jellyfin && docker rm jellyfin
-# then re-run docker run with an additional: -v /mnt/d/Movies:/movies:ro
-```
-Then in Jellyfin web UI: Dashboard → Libraries → Add Media Library → folder `/movies`.
-
-Or (cleaner) migrate to docker-compose so changes don't require recreating containers manually.
+See **§11.4** for the current k3s setup, or `k8s/jellyfin/README.md` for full ops detail.
 
 ---
 
@@ -420,6 +312,7 @@ sudo systemctl stop k3s                 # stop cluster (containers stop with it)
 - [x] **PersistentVolumeClaims** — done. `vault-data` PVC (2 Gi, local-path) holds vault's SQLite + content directory at `/var/lib/rancher/k3s/storage/`.
 - [x] **k8s dashboard** — done. Headlamp at `http://homelab/headlamp/`. See §11.2.
 - [x] **Object storage (S3-compatible)** — done. MinIO at `http://homelab:9000` (API) and `:9001` (console), data on Windows D: drive. See §11.3.
+- [x] **Migrate Jellyfin from Docker to k3s** — done 2026-05-15. Existing users/library/watch history preserved. See §11.4.
 - [ ] **Install Argo CD** for GitOps (push to GitHub → auto-deploy to cluster)
 - [ ] **HTTPS via Tailscale Serve** — deferred (Tailscale already encrypts at network layer). Path documented in `k8s/vault/README.md` if/when needed.
 - [ ] **Backup strategy** for the `vault-data` PVC (rsync host-path to NAS or S3)
@@ -483,6 +376,28 @@ Key facts:
   rclone mount homelab: M: --vfs-cache-mode writes
   ```
   Keep that PowerShell window open while you want the drive available; Ctrl+C to unmount. Full install + config steps in the per-app README.
+
+---
+
+## 11.4. Jellyfin (media streaming, in k3s)
+
+Self-hosted media server. Migrated from Docker to k3s on 2026-05-15, preserving users / library / watch history by copying the old `~/jellyfin/config` into the new PVC.
+
+URL: <http://homelab:8096>
+
+Manifests + ops docs (deploy, migration flow, adding more libraries, scale, teardown) live in [`k8s/jellyfin/README.md`](k8s/jellyfin/README.md).
+
+Key facts:
+- Namespace: `jellyfin`
+- **Hybrid storage**:
+  - `config` → PVC on WSL ext4 (5 Gi, `local-path`) — SQLite DB, users, library state. Keep on native ext4 to avoid SQLite-on-NTFS-via-DrvFs corruption risk.
+  - `cache` → hostPath `D:\jellyfin-cache\` (HDD) — large transcodes/thumbnails, kept off the C: SSD.
+  - `media` → hostPath `E:\courses\masterclass\` read-only (unchanged from Docker setup).
+- Service type **LoadBalancer** on `:8096` (same port as Docker; no Ingress because subpath would need Jellyfin's BaseURL config and breaks some clients).
+- Image `jellyfin/jellyfin:latest`, runs as root inside container (matches Docker behavior).
+- No HW transcoding (WSL2 doesn't expose GPU to containers cleanly). Software transcoding only.
+- Stop/start: `kubectl -n jellyfin scale deploy/jellyfin --replicas=0/1` or click in Headlamp.
+- Clients (unchanged): Safari at <http://homelab:8096>, Swiftfin/Infuse on iOS, Findroid on Android.
 
 ---
 
@@ -687,6 +602,7 @@ In rough order of priority:
 - [x] **First k3s app** — done. Vault deployed (§11.1) end-to-end via manifests in `k8s/vault/`.
 - [x] **k3s dashboard** — done. Headlamp at `http://homelab/headlamp/` (§11.2).
 - [x] **Object storage (S3-compatible)** — done. MinIO with data on Windows D: drive (§11.3).
+- [x] **Migrate Jellyfin Docker → k3s** — done 2026-05-15 (§11.4). Hybrid storage: config PVC on WSL ext4, cache on D: HDD, media unchanged.
 - [x] **Friendly hostname** — done. Tailscale machine renamed to `homelab` → reachable at `http://homelab/` from any tailnet device.
 - [ ] **More services** — pick based on need:
   - Vaultwarden (password manager)
@@ -696,7 +612,7 @@ In rough order of priority:
 - [ ] **Argo CD** — install in cluster for GitOps deploys (push to GitHub → auto-deploy to k3s). Worth it once we have 3+ services.
 - [ ] **HTTPS via Tailscale Serve** — deferred; Tailscale already encrypts at network layer. Steps documented in `k8s/vault/README.md`.
 - [ ] **Persist WSL DNS fix** — set `[network] generateResolvConf = false` AND `tailscale set --accept-dns=false` so manual nameservers in `/etc/resolv.conf` survive sleep/resume + WSL restarts. Currently fixed manually each time it bites.
-- [ ] **Backup strategy** for the `vault-data` PVC and `D:\minio-data\` (rsync host-paths to NAS, or use rclone to push to a cloud S3 bucket — fitting now that MinIO speaks S3 too).
+- [ ] **Backup strategy** for the `vault-data` PVC, `jellyfin-config` PVC, and the `D:\minio-data\` + `D:\jellyfin-cache\` host paths (rsync to NAS, or rclone to a cloud S3 bucket — fitting now that MinIO speaks S3 too).
 - [ ] **(Eventual) dual-boot Linux** — see section 17 for the full migration plan.
 
 ---
