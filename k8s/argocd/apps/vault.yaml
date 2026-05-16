@@ -6,9 +6,11 @@ metadata:
   finalizers:
     - resources-finalizer.argocd.argoproj.io
   annotations:
-    argocd-image-updater.argoproj.io/image-list: frontend=ghcr.io/yakshith15/vault-frontend
+    argocd-image-updater.argoproj.io/image-list: frontend=ghcr.io/yakshith15/vault-frontend,backend=ghcr.io/yakshith15/vault-backend
     argocd-image-updater.argoproj.io/frontend.update-strategy: digest
     argocd-image-updater.argoproj.io/frontend.allow-tags: regexp:^latest$
+    argocd-image-updater.argoproj.io/backend.update-strategy: digest
+    argocd-image-updater.argoproj.io/backend.allow-tags: regexp:^latest$
     argocd-image-updater.argoproj.io/write-back-method: git:secret:argocd/argocd-image-updater-secret#git-creds
     argocd-image-updater.argoproj.io/git-branch: main
 spec:

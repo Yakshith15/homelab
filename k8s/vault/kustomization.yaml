@@ -14,3 +14,5 @@ resources:
 images:
   - name: ghcr.io/yakshith15/vault-frontend
     newTag: latest
+  - name: ghcr.io/yakshith15/vault-backend
+    newTag: latest
