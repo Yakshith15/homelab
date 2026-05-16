@@ -32,6 +32,7 @@ Constraints we cared about:
   │  (client)   │                                   │  │    (idle)     │  │
   └─────────────┘                                   │  │  - k3s        │  │
                                                     │  │    - Traefik  │  │
+                                                    │  │    - argocd   │  │
                                                     │  │    - vault    │  │
                                                     │  │    - headlamp │  │
                                                     │  │    - minio    │  │
@@ -60,8 +61,15 @@ Why this design:
 Hostname inside WSL: `DESKTOP-6BCH3H9` (same as Windows host).
 
 Tailscale machine name (MagicDNS): **`homelab`** (renamed in Tailscale admin from the original `desktop-6bch3h9-1`). Resolves on any tailnet device:
-- Short: `http://homelab/`
+- Short: `http://homelab/` (root currently 404 — reserved for a future dashboard at `/`)
 - FQDN: `http://homelab.tailbed621.ts.net/`
+
+App URLs:
+- Vault: `http://homelab/vault/`
+- Headlamp: `http://homelab/headlamp/`
+- Argo CD: `http://homelab:8090/`
+- Jellyfin: `http://homelab:8096/`
+- MinIO API: `http://homelab:9000/`, Console: `http://homelab:9001/`
 
 SSH alias on Mac: `ssh wsl` → connects to Ubuntu.
 
@@ -308,12 +316,12 @@ sudo systemctl stop k3s                 # stop cluster (containers stop with it)
 
 ### TODO
 - [x] **First app deploy** — done. Vault (FastAPI + Next.js + SQLite + Gemini) deployed to k3s. See §11.1.
-- [x] **Ingress setup** — done. Traefik routes `/api/*` → backend, `/*` → frontend, `/headlamp/*` → headlamp.
+- [x] **Ingress setup** — done. Traefik routes `/vault/*` + `/vault/api/*` → vault, `/headlamp/*` → headlamp.
 - [x] **PersistentVolumeClaims** — done. `vault-data` PVC (2 Gi, local-path) holds vault's SQLite + content directory at `/var/lib/rancher/k3s/storage/`.
 - [x] **k8s dashboard** — done. Headlamp at `http://homelab/headlamp/`. See §11.2.
 - [x] **Object storage (S3-compatible)** — done. MinIO at `http://homelab:9000` (API) and `:9001` (console), data on Windows D: drive. See §11.3.
 - [x] **Migrate Jellyfin from Docker to k3s** — done 2026-05-15. Existing users/library/watch history preserved. See §11.4.
-- [ ] **Install Argo CD** for GitOps (push to GitHub → auto-deploy to cluster)
+- [x] **Install Argo CD** for GitOps — done 2026-05-16. App-of-Apps pattern; all manifests managed via git. See §11.5.
 - [ ] **HTTPS via Tailscale Serve** — deferred (Tailscale already encrypts at network layer). Path documented in `k8s/vault/README.md` if/when needed.
 - [ ] **Backup strategy** for the `vault-data` PVC (rsync host-path to NAS or S3)
 
@@ -323,16 +331,18 @@ sudo systemctl stop k3s                 # stop cluster (containers stop with it)
 
 Personal knowledge-vault app — FastAPI backend + Next.js frontend + SQLite + Claude/Gemini analysis. Lives at `vault/` in [a separate repo](https://github.com/Yakshith15/vault); deployed to this cluster from manifests in `k8s/vault/`.
 
-URL: <http://homelab/>
+URL: <http://homelab/vault/>
 
 Manifests + ops docs (deploy, scale, rolling, data migration, env updates, teardown) live in [`k8s/vault/README.md`](k8s/vault/README.md).
 
 Key facts:
 - Namespace: `vault`
 - Image source: GHCR (`ghcr.io/yakshith15/vault-backend:latest`, `ghcr.io/yakshith15/vault-frontend:latest`) — built by GHA on every push to vault repo `main`.
-- Frontend `NEXT_PUBLIC_API_URL=/api` (relative URL → same-origin → no CORS issues regardless of which hostname the user hits).
-- New images picked up via `kubectl -n vault rollout restart deploy/vault-frontend` (or backend).
+- Frontend served at `/vault` via Next.js `basePath: '/vault'`. Browser requests `/vault/api/...` → Traefik middleware `strip-vault-api` rewrites to `/...` → backend (so backend routes are unaware of the prefix).
+- Probes hit `/vault` (matches basePath); hitting `/` would 404 because of basePath.
+- New images picked up via `kubectl -n vault rollout restart deploy/vault-frontend` (or backend). Future upgrade: Argo Image Updater to auto-restart on new image tag.
 - Stop/start workflow: scale to 0 / 1 either via `kubectl -n vault scale deploy --all --replicas=0/1` or click in Headlamp.
+- Managed by Argo CD (Application `vault` in `argocd` namespace). Config changes: edit manifests → commit → push; Argo applies within ~3 min. See §11.5.
 
 ---
 
@@ -398,6 +408,32 @@ Key facts:
 - No HW transcoding (WSL2 doesn't expose GPU to containers cleanly). Software transcoding only.
 - Stop/start: `kubectl -n jellyfin scale deploy/jellyfin --replicas=0/1` or click in Headlamp.
 - Clients (unchanged): Safari at <http://homelab:8096>, Swiftfin/Infuse on iOS, Findroid on Android.
+
+---
+
+## 11.5. Argo CD (GitOps controller)
+
+GitOps for the cluster. Watches this repo and reconciles every Application to match git within ~3 minutes. Everything in `k8s/` is now managed by Argo — change a manifest, commit, push, done.
+
+URL: <http://homelab:8090/> (LoadBalancer, plain HTTP — Tailscale handles encryption)
+
+Manifests + ops docs (install, app-of-apps, sync policies, password reset, teardown) live in [`k8s/argocd/README.md`](k8s/argocd/README.md).
+
+Key facts:
+- Namespace: `argocd`
+- Installed via upstream `https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml` applied with `--server-side` (the ApplicationSet CRD exceeds the 256 KB annotation limit used by client-side apply).
+- Our overrides on top of upstream:
+  - LoadBalancer Service `argocd-server-lb` on `:8090` → `argocd-server:8080`
+  - ConfigMap `argocd-cmd-params-cm` with `server.insecure: "true"` (no internal TLS; Tailscale already encrypts the wire)
+- **App-of-Apps pattern**: a single root Application (`k8s/argocd/apps/root.yaml`) watches `k8s/argocd/apps/`. Each YAML in that folder is a child Application pointing at its own `k8s/<app>/` folder. Adding a new app = drop a new Application YAML in `apps/`, commit, push.
+- Sync policies per app:
+  - All apps: `automated.selfHeal: true`, `automated.prune: false` (manual approval needed to delete orphans — protects PVCs/Secrets from accidental `git rm`)
+  - `headlamp`: `prune: true` (stateless, safe)
+  - `minio` and `jellyfin`: `ignoreDifferences` on `spec.replicas` so manual scale-to-0 doesn't fight Argo
+- Argo manages itself: an Application called `argocd` watches `k8s/argocd/` (excluding `apps/**`). Upgrade Argo by editing manifests in git, not via kubectl.
+- Login: admin user. Initial password: `kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d`. After first login, change in UI and delete the initial secret.
+- Stop/start: `kubectl -n argocd scale deploy --all --replicas=0/1 && kubectl -n argocd scale statefulset argocd-application-controller --replicas=0/1` (the StatefulSet must be scaled separately — `scale deploy --all` doesn't catch it).
+- Common gotcha: changing a Middleware/resource name in YAML leaves the old one orphaned. With `prune: false`, Argo flags `OutOfSync` with `Requires Pruning: true` until you manually `kubectl delete` the orphan. This is the protection working as designed.
 
 ---
 
@@ -604,12 +640,15 @@ In rough order of priority:
 - [x] **Object storage (S3-compatible)** — done. MinIO with data on Windows D: drive (§11.3).
 - [x] **Migrate Jellyfin Docker → k3s** — done 2026-05-15 (§11.4). Hybrid storage: config PVC on WSL ext4, cache on D: HDD, media unchanged.
 - [x] **Friendly hostname** — done. Tailscale machine renamed to `homelab` → reachable at `http://homelab/` from any tailnet device.
+- [x] **Argo CD** — done 2026-05-16 (§11.5). GitOps controller; all 5 apps onboarded via App-of-Apps pattern. Push to GitHub → Argo applies within ~3 min.
+- [x] **Vault `/vault` path** — done 2026-05-16. Frontend rebuilt with Next.js `basePath: '/vault'`, ingress updated to `/vault/*` + `/vault/api/*` (strip-prefix). Frees `/` for a future dashboard.
 - [ ] **More services** — pick based on need:
   - Vaultwarden (password manager)
-  - Homepage (dashboard)
+  - Homepage (dashboard at `/`)
   - Gitea (self-hosted git)
+  - Uptime Kuma (status page)
   - *arr stack (Sonarr/Radarr) if you want auto-organized media
-- [ ] **Argo CD** — install in cluster for GitOps deploys (push to GitHub → auto-deploy to k3s). Worth it once we have 3+ services.
+- [ ] **Argo Image Updater** — auto-restart pods when a new `:latest` image is pushed to GHCR. Currently we `kubectl rollout restart` manually after GHA builds. Wire this up to make image bumps fully GitOps.
 - [ ] **HTTPS via Tailscale Serve** — deferred; Tailscale already encrypts at network layer. Steps documented in `k8s/vault/README.md`.
 - [ ] **Persist WSL DNS fix** — set `[network] generateResolvConf = false` AND `tailscale set --accept-dns=false` so manual nameservers in `/etc/resolv.conf` survive sleep/resume + WSL restarts. Currently fixed manually each time it bites.
 - [ ] **Backup strategy** for the `vault-data` PVC, `jellyfin-config` PVC, and the `D:\minio-data\` + `D:\jellyfin-cache\` host paths (rsync to NAS, or rclone to a cloud S3 bucket — fitting now that MinIO speaks S3 too).
@@ -807,6 +846,8 @@ Until then, WSL2 is fine.
 - Docker docs: https://docs.docker.com/
 - k3s docs: https://docs.k3s.io/
 - Headlamp docs: https://headlamp.dev/docs/latest/
+- Argo CD docs: https://argo-cd.readthedocs.io/en/stable/
+- Argo CD App-of-Apps pattern: https://argo-cd.readthedocs.io/en/stable/operator-manual/cluster-bootstrapping/
 - MinIO docs: https://min.io/docs/minio/linux/index.html
 - MinIO Client (`mc`): https://min.io/docs/minio/linux/reference/minio-mc.html
 - Traefik (k3s bundled) docs: https://doc.traefik.io/traefik/
