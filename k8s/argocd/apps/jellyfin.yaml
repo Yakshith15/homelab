@@ -11,8 +11,6 @@ spec:
     repoURL: https://github.com/Yakshith15/homelab.git
     targetRevision: main
     path: k8s/jellyfin
-    directory:
-      recurse: false
   destination:
     server: https://kubernetes.default.svc
     namespace: jellyfin
