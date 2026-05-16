@@ -1,0 +1,16 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: vault
+
+resources:
+  - 00-namespace.yaml
+  - 02-configmap.yaml
+  - 03-pvc.yaml
+  - 04-backend.yaml
+  - 05-frontend.yaml
+  - 06-ingress.yaml
+
+images:
+  - name: ghcr.io/yakshith15/vault-frontend
+    newTag: latest
