@@ -33,6 +33,8 @@ Constraints we cared about:
   └─────────────┘                                   │  │  - k3s        │  │
                                                     │  │    - Traefik  │  │
                                                     │  │    - argocd   │  │
+                                                    │  │      + img-   │  │
+                                                    │  │        updater│  │
                                                     │  │    - vault    │  │
                                                     │  │    - headlamp │  │
                                                     │  │    - minio    │  │
@@ -322,6 +324,7 @@ sudo systemctl stop k3s                 # stop cluster (containers stop with it)
 - [x] **Object storage (S3-compatible)** — done. MinIO at `http://homelab:9000` (API) and `:9001` (console), data on Windows D: drive. See §11.3.
 - [x] **Migrate Jellyfin from Docker to k3s** — done 2026-05-15. Existing users/library/watch history preserved. See §11.4.
 - [x] **Install Argo CD** for GitOps — done 2026-05-16. App-of-Apps pattern; all manifests managed via git. See §11.5.
+- [x] **Argo CD Image Updater** — done 2026-05-16. Vault images auto-update on new GHCR pushes via git write-back. See §11.5.1.
 - [ ] **HTTPS via Tailscale Serve** — deferred (Tailscale already encrypts at network layer). Path documented in `k8s/vault/README.md` if/when needed.
 - [ ] **Backup strategy** for the `vault-data` PVC (rsync host-path to NAS or S3)
 
@@ -340,7 +343,8 @@ Key facts:
 - Image source: GHCR (`ghcr.io/yakshith15/vault-backend:latest`, `ghcr.io/yakshith15/vault-frontend:latest`) — built by GHA on every push to vault repo `main`.
 - Frontend served at `/vault` via Next.js `basePath: '/vault'`. Browser requests `/vault/api/...` → Traefik middleware `strip-vault-api` rewrites to `/...` → backend (so backend routes are unaware of the prefix).
 - Probes hit `/vault` (matches basePath); hitting `/` would 404 because of basePath.
-- New images picked up via `kubectl -n vault rollout restart deploy/vault-frontend` (or backend). Future upgrade: Argo Image Updater to auto-restart on new image tag.
+- **Managed as a Kustomize source** (`k8s/vault/kustomization.yaml`) — this is a requirement for Argo CD Image Updater, which only supports Helm or Kustomize, not plain YAML directories. The `images:` block in `kustomization.yaml` is where Image Updater rewrites the digest on each new image push.
+- New images picked up automatically by Argo CD Image Updater (~2 min poll). It detects the new digest on GHCR, writes back to git, and Argo re-syncs. See §11.5 for the full wiring.
 - Stop/start workflow: scale to 0 / 1 either via `kubectl -n vault scale deploy --all --replicas=0/1` or click in Headlamp.
 - Managed by Argo CD (Application `vault` in `argocd` namespace). Config changes: edit manifests → commit → push; Argo applies within ~3 min. See §11.5.
 
@@ -434,6 +438,108 @@ Key facts:
 - Login: admin user. Initial password: `kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d`. After first login, change in UI and delete the initial secret.
 - Stop/start: `kubectl -n argocd scale deploy --all --replicas=0/1 && kubectl -n argocd scale statefulset argocd-application-controller --replicas=0/1` (the StatefulSet must be scaled separately — `scale deploy --all` doesn't catch it).
 - Common gotcha: changing a Middleware/resource name in YAML leaves the old one orphaned. With `prune: false`, Argo flags `OutOfSync` with `Requires Pruning: true` until you manually `kubectl delete` the orphan. This is the protection working as designed.
+
+For the full Argo CD reference (architecture, all apps, sync policies, gotchas, ops, Image Updater), see [`ARGO.md`](ARGO.md) at the repo root.
+
+---
+
+## 11.5.1. Argo CD Image Updater
+
+Argo CD Image Updater polls container registries for new image digests/tags and writes the new reference back to git, so Argo's normal sync loop picks up the change and rolls the pod. Closes the last manual loop in our GitOps flow (no more `kubectl rollout restart` after every GHA build).
+
+URL: no UI — it's a controller. Watch it with `kubectl -n argocd logs -f deploy/argocd-image-updater`.
+
+### Install
+
+```bash
+kubectl apply -n argocd \
+  -f https://raw.githubusercontent.com/argoproj-labs/argocd-image-updater/stable/config/install.yaml
+```
+
+**Note the path is `/config/install.yaml`, NOT `/manifests/install.yaml`** — the older path 404s on current releases.
+
+### Wiring (per app)
+
+Two pieces, both committed to git:
+
+1. **`k8s/argocd/03-image-updater.yaml`** — `ImageUpdater` CR (the v1.2.0+ model) telling Image Updater which Application to watch. We set `useAnnotations: true` so per-image config still comes from annotations on the Application itself (familiar pattern).
+
+2. **Annotations on the Application** (`k8s/argocd/apps/vault.yaml`):
+   ```yaml
+   annotations:
+     argocd-image-updater.argoproj.io/image-list: frontend=ghcr.io/yakshith15/vault-frontend:latest,backend=ghcr.io/yakshith15/vault-backend:latest
+     argocd-image-updater.argoproj.io/frontend.update-strategy: digest
+     argocd-image-updater.argoproj.io/backend.update-strategy: digest
+     argocd-image-updater.argoproj.io/write-back-method: git:secret:argocd/argocd-image-updater-secret
+     argocd-image-updater.argoproj.io/git-branch: main
+   ```
+
+### Why git write-back (not Argo write-back)
+
+Image Updater supports two write-back modes:
+
+- **`argocd`** — writes the new digest to the Application's `spec.source.helm.parameters` or `spec.source.kustomize.images` field via the Argo API. **Doesn't work for plain YAML** sources.
+- **`git`** — commits the new digest back to the source repo (in our case, mutates `k8s/vault/kustomization.yaml`'s `images:` block). Survives Application recreate; full audit trail in git.
+
+We use **`git`** because (a) it works for any source type, (b) it gives git history of what changed when, and (c) it's the only thing that survives an Application delete/recreate.
+
+### GitHub PAT (for git write-back)
+
+Image Updater needs write access to push the digest update.
+
+1. GitHub → Settings → Developer settings → Personal access tokens → **Fine-grained tokens** → Generate.
+2. Scope: **only `Yakshith15/homelab`** repo.
+3. Permissions: **`Contents: Read and write`**. Everything else: no access.
+4. Patch the secret (out-of-band, NOT committed):
+   ```bash
+   kubectl -n argocd patch secret argocd-image-updater-secret \
+     --type merge \
+     -p "{\"stringData\":{\"username\":\"git\",\"password\":\"$GITHUB_PAT\"}}"
+   ```
+   The `username` value can be anything (GitHub ignores it for PAT auth); `password` is the PAT.
+5. Restart Image Updater so it re-reads the secret:
+   ```bash
+   kubectl -n argocd rollout restart deploy/argocd-image-updater
+   ```
+
+### Rotating the PAT
+
+When the PAT expires or you want to roll it:
+
+```bash
+# 1. Generate a fresh fine-grained PAT in GitHub (same scope/permissions).
+# 2. Patch the secret in place:
+kubectl -n argocd patch secret argocd-image-updater-secret \
+  --type merge \
+  -p "{\"stringData\":{\"username\":\"git\",\"password\":\"$NEW_PAT\"}}"
+
+# 3. Restart the controller so it loads the new secret on next poll:
+kubectl -n argocd rollout restart deploy/argocd-image-updater
+
+# 4. Watch logs to confirm git push works on next cycle:
+kubectl -n argocd logs -f deploy/argocd-image-updater
+```
+
+No annotations or CRs need to change — the secret reference in `write-back-method: git:secret:argocd/argocd-image-updater-secret` is name-only.
+
+### Gotchas (learned the hard way)
+
+- **`digest` strategy still needs a tag constraint** in the image-list — that's why we have `:latest` in the entry. Putting it in `allow-tags` instead does nothing for `digest` strategy. Without it the updater logs `no valid version found`.
+- **v1.2.0 changed the secret key format**: the older `git:secret:argocd/<secret>#password` syntax (with `#key` suffix) was dropped. v1.2.0+ expects literal keys named `username` and `password` in the secret. Our annotation uses the new short form.
+- **Plain YAML sources don't work** — Image Updater requires Helm or Kustomize. This is why vault was converted from a YAML directory to a Kustomize source (`k8s/vault/kustomization.yaml`). The `images:` block in the Kustomization is what gets rewritten.
+- **Default poll interval is 2 minutes** — set via `--interval` flag if you want it faster/slower. 2 min is fine for our use case.
+- **Argo CD Application's `spec.source.directory.exclude` must be absent** when the source is a Kustomize — Argo treats the presence of `directory:` as "this is a plain-YAML source." We dropped that field from `apps/vault.yaml` when converting.
+
+### Verifying it works
+
+```bash
+# 1. Push a new commit to the vault repo's main → GHA builds → GHCR has a new digest.
+# 2. Within ~2 min, Image Updater logs should show:
+kubectl -n argocd logs -f deploy/argocd-image-updater | grep vault
+# Expect: "Setting new image to ..." then "Successfully updated image ..."
+# 3. Check git: a new commit should appear on origin/main authored by the Image Updater bot.
+# 4. Within another ~3 min, Argo CD syncs the new kustomization.yaml and rolls vault pods.
+```
 
 ---
 
@@ -648,7 +754,7 @@ In rough order of priority:
   - Gitea (self-hosted git)
   - Uptime Kuma (status page)
   - *arr stack (Sonarr/Radarr) if you want auto-organized media
-- [ ] **Argo Image Updater** — auto-restart pods when a new `:latest` image is pushed to GHCR. Currently we `kubectl rollout restart` manually after GHA builds. Wire this up to make image bumps fully GitOps.
+- [x] **Argo Image Updater** — done 2026-05-16 (§11.5.1). Vault frontend + backend auto-update on new GHCR digests via git write-back. Closes the last manual loop in our GitOps flow.
 - [ ] **HTTPS via Tailscale Serve** — deferred; Tailscale already encrypts at network layer. Steps documented in `k8s/vault/README.md`.
 - [ ] **Persist WSL DNS fix** — set `[network] generateResolvConf = false` AND `tailscale set --accept-dns=false` so manual nameservers in `/etc/resolv.conf` survive sleep/resume + WSL restarts. Currently fixed manually each time it bites.
 - [ ] **Backup strategy** for the `vault-data` PVC, `jellyfin-config` PVC, and the `D:\minio-data\` + `D:\jellyfin-cache\` host paths (rsync to NAS, or rclone to a cloud S3 bucket — fitting now that MinIO speaks S3 too).
