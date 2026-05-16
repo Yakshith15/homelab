@@ -1,0 +1,4 @@
+kustomize:
+  images:
+  - ghcr.io/yakshith15/vault-frontend:latest@sha256:01f42c6b31ff1fbaaccbbb34146fe26591c303e6b0db7b6266beb0587bc512f5
+  - ghcr.io/yakshith15/vault-backend:latest@sha256:5785b62e9c885fc71b5697a6bbcff1464ae668bd503a6d627f374b63199a3565
