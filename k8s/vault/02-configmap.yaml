@@ -6,6 +6,6 @@ metadata:
 data:
   VAULT_DB_PATH: "/data/vault.db"
   VAULT_CONTENT_DIR: "/data/content"
-  VAULT_LLM_MODEL: "gemini-2.5-flash-lite"
+  VAULT_LLM_MODEL: "gemini-3.1-flash-lite"
   VAULT_IMPORT_THROTTLE_SECONDS: "15"
   VAULT_CORS_ORIGINS: '["http://100.76.108.54"]'
