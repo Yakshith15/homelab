@@ -1,0 +1,29 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: neo
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+  annotations:
+    # Image Updater will rewrite k8s/kustomization.yaml in the neo repo
+    # whenever ghcr.io/yakshith15/neo:latest gets a new digest.
+    argocd-image-updater.argoproj.io/image-list: neo=ghcr.io/yakshith15/neo:latest
+    argocd-image-updater.argoproj.io/neo.update-strategy: digest
+    argocd-image-updater.argoproj.io/write-back-method: git:secret:argocd/argocd-image-updater-secret
+    argocd-image-updater.argoproj.io/git-branch: main
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/Yakshith15/neo.git
+    targetRevision: main
+    path: k8s
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: neo
+  syncPolicy:
+    automated:
+      prune: false      # protect the PVC + Secret from accidental deletion
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

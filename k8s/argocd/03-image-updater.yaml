@@ -7,3 +7,5 @@ spec:
   applicationRefs:
     - namePattern: vault
       useAnnotations: true
+    - namePattern: neo
+      useAnnotations: true
