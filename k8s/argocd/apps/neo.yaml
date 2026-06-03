@@ -10,6 +10,10 @@ metadata:
     # whenever ghcr.io/yakshith15/neo:latest gets a new digest.
     argocd-image-updater.argoproj.io/image-list: neo=ghcr.io/yakshith15/neo:latest
     argocd-image-updater.argoproj.io/neo.update-strategy: digest
+    # GHCR package is private — Image Updater needs the same pull secret
+    # the deployment uses (in the `neo` namespace) to fetch the tag list.
+    # Without this, all tag/digest polls 401 silently.
+    argocd-image-updater.argoproj.io/neo.pull-secret: pullsecret:neo/ghcr-pull-secret
     argocd-image-updater.argoproj.io/write-back-method: git:secret:argocd/argocd-image-updater-secret
     argocd-image-updater.argoproj.io/git-branch: main
 spec:
