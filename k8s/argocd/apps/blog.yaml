@@ -1,0 +1,36 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: blog
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+  annotations:
+    # Image Updater rewrites k8s/kustomization.yaml in the blog repo whenever
+    # ghcr.io/yakshith15/blog:latest gets a new digest.
+    argocd-image-updater.argoproj.io/image-list: blog=ghcr.io/yakshith15/blog:latest
+    argocd-image-updater.argoproj.io/blog.update-strategy: digest
+    # Only needed while the GHCR package is private — without it every
+    # tag/digest poll 401s silently and the app just never updates.
+    # Delete this line (and k8s/04-image-updater-rbac.yaml in the blog repo)
+    # if you make the package public.
+    argocd-image-updater.argoproj.io/blog.pull-secret: pullsecret:blog/ghcr-pull-secret
+    argocd-image-updater.argoproj.io/write-back-method: git:secret:argocd/argocd-image-updater-secret
+    argocd-image-updater.argoproj.io/git-branch: main
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/Yakshith15/blog.git
+    targetRevision: main
+    path: k8s
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: blog
+  syncPolicy:
+    automated:
+      # Safe to prune here, unlike neo: the blog has no PVC and no Secret of
+      # its own, so there is nothing that pruning could destroy.
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
