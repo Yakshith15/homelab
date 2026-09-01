@@ -15,7 +15,11 @@ metadata:
     # Delete this line (and k8s/04-image-updater-rbac.yaml in the blog repo)
     # if you make the package public.
     argocd-image-updater.argoproj.io/blog.pull-secret: pullsecret:blog/ghcr-pull-secret
-    argocd-image-updater.argoproj.io/write-back-method: git:secret:argocd/argocd-image-updater-secret
+    # Plain `git` reuses the repository credentials Argo CD already has for
+    # this repo, rather than a second secret holding a second token. One
+    # credential to rotate instead of two — the dedicated secret held a
+    # stale token and silently blocked every write-back.
+    argocd-image-updater.argoproj.io/write-back-method: git
     argocd-image-updater.argoproj.io/git-branch: main
 spec:
   project: default
