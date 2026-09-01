@@ -9,3 +9,5 @@ spec:
       useAnnotations: true
     - namePattern: neo
       useAnnotations: true
+    - namePattern: blog
+      useAnnotations: true
