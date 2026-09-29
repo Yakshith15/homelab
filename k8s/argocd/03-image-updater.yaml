@@ -11,3 +11,5 @@ spec:
       useAnnotations: true
     - namePattern: blog
       useAnnotations: true
+    - namePattern: mylife
+      useAnnotations: true

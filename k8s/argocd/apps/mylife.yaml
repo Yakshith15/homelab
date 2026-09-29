@@ -1,0 +1,36 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: mylife
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+  annotations:
+    # Image Updater rewrites k8s/kustomization.yaml in the mylife repo whenever
+    # ghcr.io/yakshith15/mylife:latest gets a new digest.
+    argocd-image-updater.argoproj.io/image-list: mylife=ghcr.io/yakshith15/mylife:latest
+    argocd-image-updater.argoproj.io/mylife.update-strategy: digest
+    # The GHCR package is private (the repo is) — without this every
+    # tag/digest poll 401s silently and the app just never updates.
+    argocd-image-updater.argoproj.io/mylife.pull-secret: pullsecret:mylife/ghcr-pull-secret
+    # Plain `git` reuses the repository credentials Argo CD already has for
+    # this repo, same as blog — one credential to keep alive, not two.
+    argocd-image-updater.argoproj.io/write-back-method: git
+    argocd-image-updater.argoproj.io/git-branch: main
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/Yakshith15/mylife.git
+    targetRevision: main
+    path: k8s
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: mylife
+  syncPolicy:
+    automated:
+      # Never prune: the mylife-data PVC holds every memory, photo and video,
+      # and there is no other copy. A bad git rm must not be able to delete it.
+      prune: false
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

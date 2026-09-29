@@ -72,6 +72,7 @@ App URLs:
 - Argo CD: `http://homelab:8090/`
 - Jellyfin: `http://homelab:8096/`
 - MinIO API: `http://homelab:9000/`, Console: `http://homelab:9001/`
+- mylife: `http://homelab/mylife/`
 
 SSH alias on Mac: `ssh wsl` → connects to Ubuntu.
 
@@ -412,6 +413,25 @@ Key facts:
 - No HW transcoding (WSL2 doesn't expose GPU to containers cleanly). Software transcoding only.
 - Stop/start: `kubectl -n jellyfin scale deploy/jellyfin --replicas=0/1` or click in Headlamp.
 - Clients (unchanged): Safari at <http://homelab:8096>, Swiftfin/Infuse on iOS, Findroid on Android.
+
+---
+
+## 11.4.1. mylife (life-in-weeks memory journal)
+
+Personal "life in weeks" journal — one box per week, memories with photos and video. Zero-dependency Node server + one HTML page. Code, Dockerfile, GHA build and k8s manifests live in [its own repo](https://github.com/Yakshith15/mylife) (`k8s/` is a Kustomize source), same split as neo and blog.
+
+URL: <http://homelab/mylife/>
+
+Deploy, data migration and backup steps live in the mylife repo's `README.md` (§Deploy).
+
+Key facts:
+- Namespace: `mylife`. Argo Application `k8s/argocd/apps/mylife.yaml`, in the `ImageUpdater` CR, digest strategy, plain `git` write-back (like blog).
+- **Stateful, `prune: false`**: `mylife-data` PVC (10 Gi, `local-path`) holds `me.json`, per-profile `db.json`, and every uploaded photo/video. It is the only copy — include it in the backup TODO below.
+- Served under `/mylife` with no Traefik strip-prefix: the server runs with `BASE_PATH=/mylife`, strips it itself, and 301s `/mylife` → `/mylife/`. Probes hit `/healthz`.
+- **No auth** — reachable by anything on the tailnet, nothing more. Never give it a public route.
+- GHCR package is private → `ghcr-pull-secret` in `mylife` ns (applied out-of-band) + Role letting Image Updater read it.
+- `Recreate` strategy, single replica: the server rewrites JSON files in place, one writer only.
+- Runs as uid 1000 with a read-only root filesystem; only `/data` is writable.
 
 ---
 
@@ -757,7 +777,7 @@ In rough order of priority:
 - [x] **Argo Image Updater** — done 2026-05-16 (§11.5.1). Vault frontend + backend auto-update on new GHCR digests via git write-back. Closes the last manual loop in our GitOps flow.
 - [ ] **HTTPS via Tailscale Serve** — deferred; Tailscale already encrypts at network layer. Steps documented in `k8s/vault/README.md`.
 - [ ] **Persist WSL DNS fix** — set `[network] generateResolvConf = false` AND `tailscale set --accept-dns=false` so manual nameservers in `/etc/resolv.conf` survive sleep/resume + WSL restarts. Currently fixed manually each time it bites.
-- [ ] **Backup strategy** for the `vault-data` PVC, `jellyfin-config` PVC, and the `D:\minio-data\` + `D:\jellyfin-cache\` host paths (rsync to NAS, or rclone to a cloud S3 bucket — fitting now that MinIO speaks S3 too).
+- [ ] **Backup strategy** for the `vault-data` PVC, `jellyfin-config` PVC, `mylife-data` PVC, and the `D:\minio-data\` + `D:\jellyfin-cache\` host paths (rsync to NAS, or rclone to a cloud S3 bucket — fitting now that MinIO speaks S3 too).
 - [ ] **(Eventual) dual-boot Linux** — see section 17 for the full migration plan.
 
 ---
