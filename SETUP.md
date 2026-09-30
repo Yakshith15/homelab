@@ -426,7 +426,10 @@ Deploy, data migration and backup steps live in the mylife repo's `README.md` (�
 
 Key facts:
 - Namespace: `mylife`. Argo Application `k8s/argocd/apps/mylife.yaml`, in the `ImageUpdater` CR, digest strategy, plain `git` write-back (like blog).
-- **Stateful, `prune: false`**: `mylife-data` PVC (10 Gi, `local-path`) holds `me.json`, per-profile `db.json`, and every uploaded photo/video. It is the only copy — include it in the backup TODO below.
+- **Stateful, `prune: false`. Storage on D: (HDD), like MinIO:**
+  - `D:\mylife-data` (`hostPath: /mnt/d/mylife-data` → `/data`, read-write) — `me.json`, per-profile `db.json`, uploads. The only copy of the memories. Must pre-exist, owned by uid 1000: `sudo mkdir -p /mnt/d/mylife-data && sudo chown 1000:1000 /mnt/d/mylife-data` (the Deployment uses `type: Directory`, so a missing folder fails loudly instead of being created root-owned).
+  - `D:\photos` (`hostPath: /mnt/d/photos` → `/library`, **read-only**) — the photo/video library. The app's picker browses it and memories reference files in place; it can never modify or delete them. Fill it from the Mac with `rsync -avh ~/Pictures/for-homelab/ wsl:/mnt/d/photos/`.
+  - Jellyfin could expose the same `D:\photos` as a Photos library for browsing on a screen.
 - Served under `/mylife` with no Traefik strip-prefix: the server runs with `BASE_PATH=/mylife`, strips it itself, and 301s `/mylife` → `/mylife/`. Probes hit `/healthz`.
 - **No auth** — reachable by anything on the tailnet, nothing more. Never give it a public route.
 - GHCR package is private → `ghcr-pull-secret` in `mylife` ns (applied out-of-band) + Role letting Image Updater read it.
@@ -777,7 +780,7 @@ In rough order of priority:
 - [x] **Argo Image Updater** — done 2026-05-16 (§11.5.1). Vault frontend + backend auto-update on new GHCR digests via git write-back. Closes the last manual loop in our GitOps flow.
 - [ ] **HTTPS via Tailscale Serve** — deferred; Tailscale already encrypts at network layer. Steps documented in `k8s/vault/README.md`.
 - [ ] **Persist WSL DNS fix** — set `[network] generateResolvConf = false` AND `tailscale set --accept-dns=false` so manual nameservers in `/etc/resolv.conf` survive sleep/resume + WSL restarts. Currently fixed manually each time it bites.
-- [ ] **Backup strategy** for the `vault-data` PVC, `jellyfin-config` PVC, `mylife-data` PVC, and the `D:\minio-data\` + `D:\jellyfin-cache\` host paths (rsync to NAS, or rclone to a cloud S3 bucket — fitting now that MinIO speaks S3 too).
+- [ ] **Backup strategy** for the `vault-data` PVC, `jellyfin-config` PVC, `D:\mylife-data` + `D:\photos` (mylife), and the `D:\minio-data\` + `D:\jellyfin-cache\` host paths (rsync to NAS, or rclone to a cloud S3 bucket — fitting now that MinIO speaks S3 too).
 - [ ] **(Eventual) dual-boot Linux** — see section 17 for the full migration plan.
 
 ---
