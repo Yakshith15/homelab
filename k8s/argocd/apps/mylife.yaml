@@ -34,3 +34,13 @@ spec:
       selfHeal: true
     syncOptions:
       - CreateNamespace=true
+      # Without this a sync (e.g. an Image Updater write-back) re-applies
+      # replicas from git and undoes a manual scale-to-0.
+      - RespectIgnoreDifferences=true
+    # Don't fight us when we manually scale to 0 to save resources.
+    # Argo will skip the replicas field when comparing/syncing.
+  ignoreDifferences:
+    - group: apps
+      kind: Deployment
+      jsonPointers:
+        - /spec/replicas

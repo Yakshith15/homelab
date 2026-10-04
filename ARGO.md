@@ -199,7 +199,7 @@ All Applications live in `k8s/argocd/apps/`. Each one targets `namespace: argocd
 |---|---|---|---|---|---|---|
 | `root.yaml` | `root` | `k8s/argocd/apps` | `argocd` | `false` | `true` | The App-of-Apps root. Manages every other Application. |
 | `argocd.yaml` | `argocd` | `k8s/argocd` (excl `apps/**`) | `argocd` | `false` | `true` | Argo manages itself. Has `ServerSideApply=true` for the install bundle. |
-| `vault.yaml` | `vault` | `k8s/vault` (Kustomize) | `vault` | `false` | `true` | Kustomize source. Annotated for Image Updater. |
+| `vault.yaml` | `vault` | `k8s/vault` (Kustomize) | `vault` | `false` | `true` | Kustomize source. Annotated for Image Updater. `ignoreDifferences` on `spec.replicas` for manual scale-to-0. |
 | `headlamp.yaml` | `headlamp` | `k8s/headlamp` | `headlamp` | **`true`** | `true` | Stateless, safe to prune. |
 | `minio.yaml` | `minio` | `k8s/minio` (excl `*.template.yaml`) | `minio` | `false` | `true` | `ignoreDifferences` on `spec.replicas` for manual scale-to-0. |
 | `jellyfin.yaml` | `jellyfin` | `k8s/jellyfin` | `jellyfin` | `false` | `true` | `ignoreDifferences` on `spec.replicas` for manual scale-to-0. |
@@ -214,11 +214,11 @@ Pruning means "delete cluster resources that no longer exist in git." It sounds 
 
 Only `headlamp` has `prune: true` — fully stateless, no risk.
 
-### Why `ignoreDifferences` on `spec.replicas` for MinIO and Jellyfin
+### Why `ignoreDifferences` on `spec.replicas`
 
 Sometimes we manually scale to 0 to save resources (e.g. Jellyfin when no one's streaming). Without `ignoreDifferences`, Argo would see "git says 1, cluster says 0" and immediately scale back up because `selfHeal: true`. The `ignoreDifferences` block tells Argo to skip the `replicas` field when diffing.
 
-Vault doesn't have this — its replicas are managed entirely by git.
+Vault, neo and mylife have it too (added 2026-10-04), plus the `RespectIgnoreDifferences=true` sync option. Those three get synced by Image Updater write-backs, and a sync re-applies the whole manifest — `replicas: 1` included — unless that option tells it to leave ignored fields alone.
 
 ---
 
