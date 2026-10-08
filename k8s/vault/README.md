@@ -16,7 +16,7 @@ Manifests for deploying the [vault](https://github.com/Yakshith15/vault) app to 
 
 ## First-time deploy
 
-Run from WSL (where kubectl is configured against k3s).
+Run on the homelab node (where kubectl is configured against k3s).
 
 ```bash
 # 1. Namespace
@@ -48,8 +48,8 @@ kubectl -n vault logs deploy/vault-frontend
 ```
 
 Then from your Mac (on Tailscale):
-- Frontend: <http://100.76.108.54>
-- Backend health: <http://100.76.108.54/api/health>
+- Frontend: <http://homelab/vault/>
+- Backend health: <http://homelab/vault/api/health>
 
 ## Rolling a new image
 
@@ -78,7 +78,7 @@ If SQLite was running on the source recently, flush the WAL first to avoid losin
 sqlite3 ~/Desktop/claude/projects/vault/backend/data/vault.db "PRAGMA wal_checkpoint(TRUNCATE);"
 ```
 
-**On WSL:**
+**On the homelab node** (`ssh wsl`):
 ```bash
 # Stop the backend so SQLite isn't open while we overwrite it
 kubectl -n vault scale deploy/vault-backend --replicas=0
@@ -100,7 +100,7 @@ kubectl -n vault scale deploy/vault-backend --replicas=1
 kubectl -n vault rollout status deploy/vault-backend
 ```
 
-Refresh the frontend at <http://100.76.108.54> to confirm your data shows up.
+Refresh the frontend at <http://homelab/vault/> to confirm your data shows up.
 
 ## Updating env vars
 
@@ -150,4 +150,4 @@ The complexity here comes from three systems overlapping (k3s svclb LoadBalancer
 kubectl delete namespace vault
 ```
 
-PVC data is deleted with the namespace. Back up `/var/lib/rancher/k3s/storage/<pvc-id>` on the WSL host first if you care about it.
+PVC data is deleted with the namespace. Back up `/var/lib/rancher/k3s/storage/<pvc-id>` on the homelab node first if you care about it.

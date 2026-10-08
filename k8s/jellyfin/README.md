@@ -8,9 +8,9 @@ URL: <http://homelab:8096>
 
 | Volume | Type | Path on host | Why |
 |---|---|---|---|
-| `config` | PVC `jellyfin-config` (5 Gi, `local-path`) | WSL ext4 vhd | Holds SQLite DB, users, library state. Small + performance-sensitive. SQLite on NTFS-via-DrvFs is risky → keep on native ext4. |
-| `cache` | hostPath | `D:\jellyfin-cache\` (HDD) | Transcoded chunks + image thumbnails. Can grow to 10+ GB. Sequential I/O, safe on NTFS. Keeps the C: SSD free. |
-| `media` | hostPath (read-only) | `E:\courses\masterclass\` (HDD) | Source video library. Same as Docker setup — zero copy. |
+| `config` | PVC `jellyfin-config` (5 Gi, `local-path`) | root SSD (ext4), `/var/lib/rancher/k3s/storage/` | Holds SQLite DB, users, library state. Small + performance-sensitive. SQLite on NTFS is risky → keep on native ext4. |
+| `cache` | hostPath | `/mnt/d/jellyfin-cache` (HDD, NTFS) | Transcoded chunks + image thumbnails. Can grow to 10+ GB. Sequential I/O, safe on NTFS. Keeps the SSD free. |
+| `media` | hostPath (read-only) | `/mnt/e/courses/masterclass` (HDD, NTFS) | Source video library. Same as Docker setup — zero copy. |
 
 ## Layout
 
@@ -126,7 +126,7 @@ Same as before:
 
 ## Notes
 
-- **No HW transcoding**: WSL2 doesn't expose the GPU to containers cleanly. Software transcoding only — fine for course videos at typical bitrates.
+- **No HW transcoding**: not configured (it was impossible under WSL2; on bare-metal Ubuntu it could be). Software transcoding only — fine for course videos at typical bitrates.
 - **No HTTPS**: Tailscale already encrypts traffic. Some Jellyfin clients may complain about HTTP for "remote" access — that's a UI warning, traffic is still secure on tailnet.
 - **Resource limits**: 2 CPU / 4 Gi max. Bump if you hit transcoding ceilings.
 - **Image pinned to `:latest`**: rolling restart picks up new versions. Pin to a specific tag for stability.
@@ -138,9 +138,9 @@ Same as before:
 kubectl delete namespace jellyfin
 ```
 
-The hostPath cache at `D:\jellyfin-cache\` is **NOT** deleted (it's outside the cluster). Remove manually if desired:
+The hostPath cache at `/mnt/d/jellyfin-cache` is **NOT** deleted (it's outside the cluster). Remove manually if desired:
 ```bash
 sudo rm -rf /mnt/d/jellyfin-cache
 ```
 
-Media at `E:\courses\masterclass\` is read-only and untouched.
+Media at `/mnt/e/courses/masterclass` is read-only and untouched.

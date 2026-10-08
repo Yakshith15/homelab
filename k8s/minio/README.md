@@ -7,7 +7,7 @@ Self-hosted S3-compatible object storage. Used as the homelab's general-purpose 
 | S3 API (for SDKs, `aws cli`, `mc`, rclone, etc.) | <http://homelab:9000> |
 | Web console (browser admin UI) | <http://homelab:9001> |
 
-Object data is stored at `D:\minio-data\` on the Windows host (mounted into the pod via `hostPath: /mnt/d/minio-data`). Living on the HDD, not the C: SSD, so we don't burn through SSD space.
+Object data is stored at `/mnt/d/minio-data` on the homelab node's HDD (the NTFS partition that used to be Windows `D:`), mounted into the pod via `hostPath`. Living on the HDD, not the SSD, so we don't burn through SSD space.
 
 ## Layout
 
@@ -116,7 +116,7 @@ kubectl -n minio rollout restart deploy/minio
 
 ## Backing up
 
-The entire MinIO state (objects + metadata) lives in `D:\minio-data\`. Backup is a copy of that folder:
+The entire MinIO state (objects + metadata) lives in `/mnt/d/minio-data`. Backup is a copy of that folder:
 
 ```bash
 # Snapshot to another drive / NAS
@@ -127,12 +127,12 @@ Or `rclone sync` to another S3 / cloud destination.
 
 ## Notes
 
-- **Single-drive mode**: this is a single-node, single-drive deployment — no erasure coding, no replication. If `D:\minio-data\` is corrupted/lost, the data is gone. Worth setting up rsync to E: or external NAS for anything important.
-- **Don't touch `D:\minio-data\` directly**: MinIO stores each object in its own internal "XL" format — a directory named after the object, containing `xl.meta` (metadata) and one or more `part.N` files (raw bytes, no extension). The on-disk layout is **not** a 1:1 mirror of your buckets/files. Treat the folder as MinIO's internal database, not as a file browser.
-- **Don't touch `.minio.sys\`**: that's MinIO's internal config (IAM, bucket policies). Editing it can corrupt the install.
+- **Single-drive mode**: this is a single-node, single-drive deployment — no erasure coding, no replication. If `/mnt/d/minio-data` is corrupted/lost, the data is gone. Worth setting up rsync to `/mnt/e` or an external NAS for anything important.
+- **Don't touch `/mnt/d/minio-data` directly**: MinIO stores each object in its own internal "XL" format — a directory named after the object, containing `xl.meta` (metadata) and one or more `part.N` files (raw bytes, no extension). The on-disk layout is **not** a 1:1 mirror of your buckets/files. Treat the folder as MinIO's internal database, not as a file browser.
+- **Don't touch `.minio.sys/`**: that's MinIO's internal config (IAM, bucket policies). Editing it can corrupt the install.
 - **All real interaction happens via the S3 API**: web console, `mc`, `aws cli`, boto3, rclone, or a mounted client (see "Viewing files in Windows / Mac" below).
-- **Image pinned to `:latest`**: `kubectl rollout restart deploy/minio` picks up new versions. Pin to a specific `RELEASE.YYYY-MM-DD` tag if you want stability.
-- **Expansion**: if D: fills up, you can add E: as an additional pool — needs a redeploy with a new MinIO server pool (out of scope of this initial setup).
+- **Image is `cgr.dev/chainguard/minio:latest`**: `minio/minio` was removed from Docker Hub (404 as of 2026-10). With `IfNotPresent`, a new version is only pulled on a node that has no cached copy.
+- **Expansion**: if `/mnt/d` fills up, you can add `/mnt/e` as an additional pool — needs a redeploy with a new MinIO server pool (out of scope of this initial setup).
 
 ## Viewing files in Windows / Mac
 
@@ -146,7 +146,7 @@ Since on-disk files aren't directly browseable (see the note above), use one of 
 5. **More Options → Use Insecure Connection (HTTP)** since we're not on HTTPS
 6. Connect → buckets show as folders, drag-drop works both ways
 
-### Option B: rclone mount as a drive letter (Windows) — **current setup**
+### Option B: rclone mount as a drive letter (Windows) — from the WSL era, kept for reference
 Gives you a real `M:\` drive that looks like a normal folder. Buckets appear as top-level folders, files inside are real files (double-click opens them in their default app). Drag-drop works both directions and syncs to MinIO in real time.
 
 #### One-time install (already done)
@@ -212,9 +212,9 @@ Same as Option B but install macFUSE/FUSE-T instead of WinFsp. Mount to e.g. `~/
 ### Option D: `mc mirror` to keep a local copy in sync
 Periodic one-way sync from MinIO → a real folder on disk:
 ```bash
-mc mirror homelab/photos D:\minio-mirror\photos
+mc mirror homelab/photos ~/minio-mirror/photos
 ```
-Then `D:\minio-mirror\photos` has the actual files. Re-run to sync changes. Useful for "always have a real local copy" but doubles your storage footprint.
+Then `~/minio-mirror/photos` has the actual files. Re-run to sync changes. Useful for "always have a real local copy" but doubles your storage footprint.
 
 **Recommendation**: Cyberduck for casual browsing, rclone mount when you want a real drive letter that other apps (Photos, video players, etc.) can open files from directly.
 
@@ -224,7 +224,7 @@ Then `D:\minio-mirror\photos` has the actual files. Re-run to sync changes. Usef
 kubectl delete namespace minio
 ```
 
-Object data on `D:\minio-data\` is **NOT** deleted (it's outside the cluster). Remove manually if desired:
+Object data on `/mnt/d/minio-data` is **NOT** deleted (it's outside the cluster). Remove manually if desired:
 ```bash
 sudo rm -rf /mnt/d/minio-data
 ```

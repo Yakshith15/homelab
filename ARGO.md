@@ -16,7 +16,8 @@ Repo: `Yakshith15/homelab` — Argo manifests live under `k8s/argocd/`.
 | `argocd-server-lb` Service | `argocd` ns, our manifest | Exposes the UI on `:8090` over the tailnet |
 | `argocd-cmd-params-cm` ConfigMap | `argocd` ns, our manifest | Forces `argocd-server` into `--insecure` mode (plain HTTP) |
 | Argo CD Image Updater | `argocd` ns, upstream install | Polls GHCR for new image digests, writes them back to git |
-| `ImageUpdater` CR `vault` | `argocd` ns, our manifest | Tells the updater which Application to watch |
+| `ImageUpdater` CR `vault` | `argocd` ns, our manifest | Tells the updater which Applications to watch (`vault`, `neo`, `blog`, `mylife`) |
+| `repo-github-yakshith` Secret (`repo-creds`) | `argocd` ns, applied out-of-band | One GitHub credential for every `Yakshith15/*` repo — the private `neo`, `blog`, `mylife` repos need it |
 
 URL: <http://homelab:8090> (over Tailscale).
 
@@ -39,6 +40,8 @@ URL: <http://homelab:8090> (over Tailscale).
   k8s/argocd/    k8s/vault/  k8s/headlamp/  k8s/minio/    k8s/jellyfin/
   (excl apps/**)
 ```
+
+`blog`, `neo` and `mylife` hang off `root` the same way, but each points at the `k8s/` folder of its **own private repo** (`Yakshith15/<app>`) instead of a folder here.
 
 - `root` is the only Application that needs to be `kubectl apply`d by hand — everything else gets onboarded via the loop above.
 - Each child Application points at its own `k8s/<app>/` folder. To add a new app, drop a new YAML in `apps/`, commit, push. `root` picks it up on next sync (~3 min).
@@ -69,13 +72,14 @@ On a separate ~2-minute cycle:
 ### Prereqs
 
 - k3s up, kubectl works, `KUBECONFIG=$HOME/.kube/config`.
-- This repo cloned at `~/homelab`.
+- This repo cloned at `~/projects/homelab`.
+- The node's drives mounted and DNS sorted — see `SETUP.md` §7–§8. `SETUP.md` §10 is the whole rebuild in order; this section is the Argo part of it.
 
 ### Step 1 — Argo CD core
 
 ```bash
 # Namespace
-kubectl apply -f ~/homelab/k8s/argocd/00-namespace.yaml
+kubectl apply -f ~/projects/homelab/k8s/argocd/00-namespace.yaml
 
 # Upstream install — server-side apply is REQUIRED.
 # The ApplicationSet CRD definition exceeds the 256 KB annotation limit
@@ -89,8 +93,8 @@ kubectl apply --server-side -n argocd \
 ### Step 2 — Our overrides
 
 ```bash
-kubectl apply -f ~/homelab/k8s/argocd/02-server-cmd-params.yaml
-kubectl apply -f ~/homelab/k8s/argocd/01-server-loadbalancer.yaml
+kubectl apply -f ~/projects/homelab/k8s/argocd/02-server-cmd-params.yaml
+kubectl apply -f ~/projects/homelab/k8s/argocd/01-server-loadbalancer.yaml
 
 # Pick up --insecure
 kubectl -n argocd rollout restart deploy/argocd-server
@@ -100,15 +104,37 @@ kubectl -n argocd rollout status deploy/argocd-server
 kubectl -n argocd rollout status statefulset/argocd-application-controller
 ```
 
-### Step 3 — Bootstrap the App of Apps
+### Step 3 — Credentials and app secrets (before the bootstrap)
+
+Nothing here is in git. Doing it before Step 4 lets every app come up healthy on the first sync; skipping it leaves the private-repo apps `Unknown` and the secret-dependent pods in `CreateContainerConfigError` / `ImagePullBackOff`.
 
 ```bash
-kubectl apply -f ~/homelab/k8s/argocd/apps/root.yaml
+# $GITHUB_PAT: fine-grained token — repos homelab, neo, blog, mylife; Contents: Read and write.
+# Load it with:  read -s -p "token: " GITHUB_PAT; echo
+kubectl -n argocd create secret generic repo-github-yakshith \
+  --from-literal=type=git --from-literal=url=https://github.com/Yakshith15 \
+  --from-literal=username=git --from-literal=password="$GITHUB_PAT"
+kubectl -n argocd label secret repo-github-yakshith argocd.argoproj.io/secret-type=repo-creds
+
+# $GHCR_PAT: CLASSIC token with read:packages. GHCR rejects fine-grained tokens.
+for ns in vault minio neo blog mylife; do kubectl create ns $ns; done
+for ns in neo blog mylife; do
+  kubectl -n $ns create secret docker-registry ghcr-pull-secret \
+    --docker-server=ghcr.io --docker-username=Yakshith15 --docker-password="$GHCR_PAT"
+done
+```
+
+Plus the per-app secrets (`vault-secrets`, `minio-secrets`, `neo-secrets`) — table in `SETUP.md` §9.
+
+### Step 4 — Bootstrap the App of Apps
+
+```bash
+kubectl apply -f ~/projects/homelab/k8s/argocd/apps/root.yaml
 ```
 
 `root` then picks up every other YAML in `apps/` automatically.
 
-### Step 4 — Image Updater
+### Step 5 — Image Updater
 
 ```bash
 # Install the controller. NOTE: /config/install.yaml, NOT /manifests/install.yaml.
@@ -116,17 +142,18 @@ kubectl apply -f ~/homelab/k8s/argocd/apps/root.yaml
 kubectl apply -n argocd \
   -f https://raw.githubusercontent.com/argoproj-labs/argocd-image-updater/stable/config/install.yaml
 
-# Wait
-kubectl -n argocd rollout status deploy/argocd-image-updater
+# Wait. The Deployment is named argocd-image-updater-controller
+# (plain argocd-image-updater in older releases — NotFound if you use that).
+kubectl -n argocd rollout status deploy/argocd-image-updater-controller
 ```
 
 The `ImageUpdater` CR at `k8s/argocd/03-image-updater.yaml` will be applied by Argo once the `argocd` self-Application syncs.
 
-### Step 5 — Wire the GitHub PAT for Image Updater
+### Step 6 — Wire the GitHub PAT for Image Updater
 
-See §10 for full PAT setup. Without this the controller logs `403 Forbidden` on every git push attempt.
+See §10 for full PAT setup — the same fine-grained token as Step 3 works. Without this the controller logs `403 Forbidden` on every git push attempt for `vault` and `neo` (`blog` and `mylife` write back with Argo's own repo credentials instead).
 
-### Step 6 — Login + first sync
+### Step 7 — Login + first sync
 
 ```bash
 # Get initial admin password
@@ -158,7 +185,7 @@ Rule: **always use `--server-side` when applying the upstream Argo install bundl
 
 File: `k8s/argocd/01-server-loadbalancer.yaml`.
 
-k3s ships ServiceLB (klipper-lb), which gives every `LoadBalancer` Service an external IP equal to the node's IP. So `argocd-server-lb` ends up listening on `WSL_IP:8090`, which over the tailnet resolves to `homelab:8090`.
+k3s ships ServiceLB (klipper-lb), which gives every `LoadBalancer` Service an external IP equal to the node's IP. So `argocd-server-lb` ends up listening on the node's port `8090`, which over the tailnet resolves to `homelab:8090`.
 
 Why a separate Service instead of editing the bundled `argocd-server`: the upstream install owns that Service. Our own Service is additive and survives Argo upgrades cleanly.
 
@@ -168,8 +195,8 @@ File: `k8s/argocd/02-server-cmd-params.yaml` (ConfigMap `argocd-cmd-params-cm`).
 
 By default `argocd-server` terminates TLS internally with a self-signed cert. That breaks browser access without cert juggling. We disable it because:
 
-- The wire is already encrypted by Tailscale's WireGuard tunnel between Mac and the WSL node.
-- The traffic between Mac → WSL node never touches the LAN or the public internet unencrypted.
+- The wire is already encrypted by Tailscale's WireGuard tunnel between Mac and the homelab node.
+- The traffic between Mac → homelab node never touches the LAN or the public internet unencrypted.
 - Self-signed TLS on `:8090` adds zero security and a lot of friction (browser warnings, CLI `--insecure` flags everywhere).
 
 Don't use this on a node that isn't behind a private mesh.
@@ -203,6 +230,9 @@ All Applications live in `k8s/argocd/apps/`. Each one targets `namespace: argocd
 | `headlamp.yaml` | `headlamp` | `k8s/headlamp` | `headlamp` | **`true`** | `true` | Stateless, safe to prune. |
 | `minio.yaml` | `minio` | `k8s/minio` (excl `*.template.yaml`) | `minio` | `false` | `true` | `ignoreDifferences` on `spec.replicas` for manual scale-to-0. |
 | `jellyfin.yaml` | `jellyfin` | `k8s/jellyfin` | `jellyfin` | `false` | `true` | `ignoreDifferences` on `spec.replicas` for manual scale-to-0. |
+| `neo.yaml` | `neo` | `Yakshith15/neo` → `k8s` (Kustomize) | `neo` | `false` | `true` | Private repo + private image. Image Updater via `argocd-image-updater-secret`. PVC + `neo-secrets`. |
+| `blog.yaml` | `blog` | `Yakshith15/blog` → `k8s` (Kustomize) | `blog` | **`true`** | `true` | Private repo + private image. Stateless. Image Updater with plain `git` write-back. |
+| `mylife.yaml` | `mylife` | `Yakshith15/mylife` → `k8s` (Kustomize) | `mylife` | `false` | `true` | Private repo + private image. Data on hostPath `/mnt/d`. Plain `git` write-back. |
 
 ### Why `prune: false` on most apps
 
@@ -212,7 +242,7 @@ Pruning means "delete cluster resources that no longer exist in git." It sounds 
 - Vault, MinIO, Jellyfin all have data on PVCs or hostPaths — accidentally pruning the PVC = data loss.
 - With `prune: false`, Argo flags the app `OutOfSync` with `Requires Pruning: true` until you manually approve via UI ("Sync" → check "Prune") or `kubectl delete` the orphan yourself.
 
-Only `headlamp` has `prune: true` — fully stateless, no risk.
+Only `headlamp` and `blog` have `prune: true` — fully stateless, no risk.
 
 ### Why `ignoreDifferences` on `spec.replicas`
 
@@ -436,7 +466,7 @@ The `#key` suffix was dropped. v1.2.0+ expects literal keys named `username` and
 
 ```bash
 # 1. GitHub → Settings → Developer settings → Personal access tokens → Fine-grained
-#    Scope: only Yakshith15/homelab
+#    Scope: Yakshith15/homelab, neo, blog, mylife (one token serves Argo repo access and write-back)
 #    Permissions: Contents: Read and write
 #    Copy the token (you only see it once).
 
@@ -450,10 +480,10 @@ kubectl -n argocd patch secret argocd-image-updater-secret \
 #  as an empty placeholder — we patch in the credentials.)
 
 # 3. Restart the controller:
-kubectl -n argocd rollout restart deploy/argocd-image-updater
+kubectl -n argocd rollout restart deploy/argocd-image-updater-controller
 
 # 4. Watch logs for the next poll cycle:
-kubectl -n argocd logs -f deploy/argocd-image-updater
+kubectl -n argocd logs -f deploy/argocd-image-updater-controller
 ```
 
 The `username` value is irrelevant for PAT auth (GitHub uses the PAT as the password and ignores the username); we use `git` by convention.
@@ -469,10 +499,10 @@ kubectl -n argocd patch secret argocd-image-updater-secret \
   -p "{\"stringData\":{\"username\":\"git\",\"password\":\"$NEW_PAT\"}}"
 
 # 3. Restart the controller:
-kubectl -n argocd rollout restart deploy/argocd-image-updater
+kubectl -n argocd rollout restart deploy/argocd-image-updater-controller
 
 # 4. Verify next poll cycle pushes successfully (no 403 in logs):
-kubectl -n argocd logs -f deploy/argocd-image-updater | grep -i "push\|403\|forbidden"
+kubectl -n argocd logs -f deploy/argocd-image-updater-controller | grep -i "push\|403\|forbidden"
 ```
 
 No git changes; no Application annotation changes. Just patch + restart.
@@ -483,13 +513,13 @@ No git changes; no Application annotation changes. Just patch + restart.
 # 1. Push a commit to the vault app repo (Yakshith15/vault) on main.
 # 2. GHA builds and pushes new images to GHCR.
 # 3. Wait ~2 min, then check Image Updater logs:
-kubectl -n argocd logs -f deploy/argocd-image-updater | grep vault
+kubectl -n argocd logs -f deploy/argocd-image-updater-controller | grep vault
 #    Expect: "Setting new image to ghcr.io/yakshith15/vault-frontend@sha256:..."
 #            "Successfully updated image ..."
 #            "Committing 2 parameter update(s) for application vault"
 
 # 4. Verify a new commit appeared on origin/main:
-git -C ~/homelab fetch && git -C ~/homelab log --oneline origin/main -5
+git -C ~/projects/homelab fetch && git -C ~/projects/homelab log --oneline origin/main -5
 #    Look for a commit authored by the Image Updater bot mutating
 #    k8s/vault/kustomization.yaml's images: block.
 
@@ -500,7 +530,7 @@ kubectl -n vault get pods -w
 ### Defaults worth knowing
 
 - **Poll interval**: 2 minutes (`--interval` flag). Fine for our use case.
-- **Registry credentials**: not needed for public GHCR images. If we ever go private, add a `Secret` with `.dockerconfigjson` and reference it via `pull-secret` annotation.
+- **Registry credentials**: not needed for public GHCR images (vault). `neo`, `blog` and `mylife` are private: each Application carries a `<alias>.pull-secret: pullsecret:<ns>/ghcr-pull-secret` annotation, and each app repo ships a Role/RoleBinding letting the `argocd-image-updater-controller` ServiceAccount read that secret.
 - **Git commit author**: defaults to `argocd-image-updater <noreply@argoproj.io>`. Configurable via the controller's args, but we leave it as-is.
 
 ---
@@ -578,21 +608,21 @@ Note the StatefulSet scale is a separate command — `scale deploy --all` doesn'
 kubectl -n argocd logs -f deploy/argocd-server                    # UI / API
 kubectl -n argocd logs -f deploy/argocd-repo-server               # git clone / kustomize build
 kubectl -n argocd logs -f statefulset/argocd-application-controller  # reconcile loop
-kubectl -n argocd logs -f deploy/argocd-image-updater             # image polling
+kubectl -n argocd logs -f deploy/argocd-image-updater-controller             # image polling
 ```
 
 ### Onboard a new app (template)
 
 1. Create the app's manifest directory + manifests:
    ```bash
-   mkdir -p ~/homelab/k8s/myapp
+   mkdir -p ~/projects/homelab/k8s/myapp
    # add 00-namespace.yaml, deployment, service, etc.
    ```
 
 2. Create the Application YAML in `apps/`:
 
 ```yaml
-# ~/homelab/k8s/argocd/apps/myapp.yaml
+# ~/projects/homelab/k8s/argocd/apps/myapp.yaml
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
