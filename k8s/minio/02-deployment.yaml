@@ -23,7 +23,9 @@ spec:
         fsGroup: 1000
       containers:
         - name: minio
-          image: minio/minio:latest
+          # MinIO pulled its images from Docker Hub (minio/minio is a 404 as of
+          # 2026-10); Chainguard still publishes a build of the same server.
+          image: cgr.dev/chainguard/minio:latest
           imagePullPolicy: IfNotPresent
           args:
             - server
